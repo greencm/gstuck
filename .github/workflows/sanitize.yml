@@ -32,7 +32,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v3
 
       - name: Clone upstream gstack
         run: git clone --quiet https://github.com/garrytan/gstack.git /tmp/gstack-upstream
