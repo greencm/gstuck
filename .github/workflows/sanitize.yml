@@ -1,0 +1,138 @@
+name: Daily Sanitize
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC (gives time for overnight compromise detection)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      quarantine_days:
+        description: 'Commit quarantine window (days)'
+        required: false
+        default: '7'
+      dep_quarantine_days:
+        description: 'npm dependency quarantine window (days)'
+        required: false
+        default: '7'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gstuck
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Clone upstream gstack
+        run: git clone --quiet https://github.com/garrytan/gstack.git /tmp/gstack-upstream
+
+      - name: Resolve quarantine-safe SHA
+        id: resolve
+        run: |
+          DAYS="${{ inputs.quarantine_days || '7' }}"
+          SHA=$(bash scripts/sanitize.sh --resolve-sha /tmp/gstack-upstream --quarantine-days "$DAYS" 2>/dev/null | head -1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          # Check if this SHA is already what we have
+          CURRENT_SHA=$(cat upstream.sha 2>/dev/null | tr -d '[:space:]' || echo "")
+          if [ "$SHA" = "$CURRENT_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "SHA unchanged ($SHA) — nothing to do"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "New SHA: $SHA (was: $CURRENT_SHA)"
+          fi
+
+      - name: Skip if unchanged
+        if: steps.resolve.outputs.changed == 'false'
+        run: echo "Upstream SHA unchanged — skipping sanitization"
+
+      - name: Run sanitize
+        if: steps.resolve.outputs.changed == 'true'
+        run: |
+          DAYS="${{ inputs.quarantine_days || '7' }}"
+          echo "${{ steps.resolve.outputs.sha }}" > upstream.sha
+          bash scripts/sanitize.sh --local /tmp/gstack-upstream --quarantine-days "$DAYS"
+
+      - name: Pin dependencies
+        if: steps.resolve.outputs.changed == 'true'
+        run: |
+          DAYS="${{ inputs.dep_quarantine_days || '7' }}"
+          bash scripts/pin-deps.sh --quarantine-days "$DAYS"
+
+      - name: Build
+        if: steps.resolve.outputs.changed == 'true'
+        run: |
+          cd output/gstack
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Static verification
+        if: steps.resolve.outputs.changed == 'true'
+        run: bash scripts/verify.sh
+
+      - name: Get upstream version + commit info
+        if: steps.resolve.outputs.changed == 'true'
+        id: info
+        run: |
+          VERSION=$(cat output/gstack/VERSION 2>/dev/null | tr -d '[:space:]' || echo "unknown")
+          SHORT_SHA=$(echo "${{ steps.resolve.outputs.sha }}" | head -c 8)
+          COMMIT_DATE=$(cd /tmp/gstack-upstream && git show -s --format='%ci' "${{ steps.resolve.outputs.sha }}" | cut -d' ' -f1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR branch
+        if: steps.resolve.outputs.changed == 'true'
+        run: |
+          BRANCH="sanitize/gstack-v${{ steps.info.outputs.version }}-${{ steps.info.outputs.short_sha }}"
+          git checkout -b "$BRANCH"
+          git add upstream.sha output/
+          git commit -m "chore: sanitize upstream gstack v${{ steps.info.outputs.version }} (${{ steps.info.outputs.short_sha }})"
+          git push -u origin "$BRANCH"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Create Pull Request
+        if: steps.resolve.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "Sanitize: gstack v${{ steps.info.outputs.version }} (${{ steps.info.outputs.short_sha }})" \
+            --body "$(cat <<'EOF'
+          ## Upstream update
+
+          - **Upstream SHA:** `${{ steps.resolve.outputs.sha }}`
+          - **Upstream version:** v${{ steps.info.outputs.version }}
+          - **Commit date:** ${{ steps.info.outputs.commit_date }}
+          - **Commit quarantine:** ${{ inputs.quarantine_days || '7' }} days
+          - **npm quarantine:** ${{ inputs.dep_quarantine_days || '7' }} days
+
+          ## Automated checks passed
+
+          - [x] `sanitize.sh` — all telemetry/phone-home patterns removed
+          - [x] `pin-deps.sh` — dependencies locked by SHA-512 integrity hash
+          - [x] `bun run build` — SKILL.md regeneration + browse binary compiled
+          - [x] `verify.sh` — static verification gate passed
+
+          ## Before merging
+
+          Run the **AI security review** using Claude Code:
+
+          ```
+          /review-sanitize
+          ```
+
+          This reviews the diff for new external URLs, network calls, data collection,
+          or re-added telemetry that the static checks can't catch.
+
+          See CLAUDE.md "Verify: AI Security Review" for the full protocol.
+          EOF
+          )" \
+            --label "sanitize"

@@ -1,0 +1,7 @@
+.env
+output/gstack/node_modules/
+output/gstack/.agents/
+output/gstack/browse/dist/browse
+output/gstack/browse/dist/find-browse
+output/gstack/browse/dist/server-node.mjs
+output/gstack/bin/gstack-global-discover
