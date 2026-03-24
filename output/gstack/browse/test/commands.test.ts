@@ -198,6 +198,27 @@ describe('Inspection', () => {
     }
   });
 
+  test('js handles multi-line with await', async () => {
+    const code = 'const x = await Promise.resolve(42);\nreturn x;';
+    const result = await handleReadCommand('js', [code], bm);
+    expect(result).toBe('42');
+  });
+
+  test('js handles await with semicolons', async () => {
+    const result = await handleReadCommand('js', ['const x = await Promise.resolve(5); return x + 1;'], bm);
+    expect(result).toBe('6');
+  });
+
+  test('js handles await with statement keywords', async () => {
+    const result = await handleReadCommand('js', ['const res = await Promise.resolve("ok"); return res;'], bm);
+    expect(result).toBe('ok');
+  });
+
+  test('js still works for simple expressions', async () => {
+    const result = await handleReadCommand('js', ['1 + 2'], bm);
+    expect(result).toBe('3');
+  });
+
   test('css returns computed property', async () => {
     const result = await handleReadCommand('css', ['h1', 'color'], bm);
     // Navy color
@@ -246,6 +267,36 @@ describe('Interaction', () => {
     const val = await handleReadCommand('js', ['document.querySelector("#role").value'], bm);
     expect(val).toBe('admin');
   });
+
+  test('click on option ref auto-routes to selectOption', async () => {
+    await handleWriteCommand('goto', [baseUrl + '/forms.html'], bm);
+    // Reset select to default
+    await handleReadCommand('js', ['document.querySelector("#role").value = ""'], bm);
+    const snap = await handleMetaCommand('snapshot', [], bm, async () => {});
+    // Find an option ref (e.g., "Admin" option)
+    const optionLine = snap.split('\n').find((l: string) => l.includes('[option]') && l.includes('"Admin"'));
+    expect(optionLine).toBeDefined();
+    const refMatch = optionLine!.match(/@(e\d+)/);
+    expect(refMatch).toBeDefined();
+    const ref = `@${refMatch![1]}`;
+    const result = await handleWriteCommand('click', [ref], bm);
+    expect(result).toContain('auto-routed');
+    expect(result).toContain('Selected');
+    // Verify the select value actually changed
+    const val = await handleReadCommand('js', ['document.querySelector("#role").value'], bm);
+    expect(val).toBe('admin');
+  });
+
+  test('click CSS selector on option gives helpful error', async () => {
+    await handleWriteCommand('goto', [baseUrl + '/forms.html'], bm);
+    try {
+      await handleWriteCommand('click', ['option[value="admin"]'], bm);
+      expect(true).toBe(false); // Should not reach here
+    } catch (err: any) {
+      expect(err.message).toContain('select');
+      expect(err.message).toContain('option');
+    }
+  }, 15000);
 
   test('hover works', async () => {
     const result = await handleWriteCommand('hover', ['h1'], bm);
