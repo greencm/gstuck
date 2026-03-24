@@ -1,9 +1,9 @@
 ---
 name: review-sanitize
-version: 1.0.0
+version: 1.1.0
 description: |
-  AI security review for gstuck sanitize PRs. Reviews the diff between main
-  and the sanitize branch for new external URLs, network calls, data collection,
+  AI security review for gstuck sanitize PRs. Fetches the open PR from GitHub,
+  reviews the diff for new external URLs, network calls, data collection,
   telemetry, or re-added gutted functions. Produces a structured PASS/FAIL report.
   Use when a sanitize PR is open and needs review before merging.
 allowed-tools:
@@ -15,8 +15,25 @@ allowed-tools:
 
 # /review-sanitize — AI Security Review for Sanitize PRs
 
-Review the diff from the current sanitize PR for security concerns that
+Review the open sanitize PR on GitHub for security concerns that
 the static `verify.sh` can't catch — new patterns introduced by upstream.
+
+## Step 0: Fetch the PR
+
+```bash
+cd /Users/cmg/src/gstack_review/gstuck
+gh pr list --state open --head sanitize/latest --json number,title,url --jq '.[] | "\(.number) \(.title) \(.url)"'
+```
+
+If no open PR, tell the user there's nothing to review.
+
+If a PR exists, fetch and check out the branch:
+
+```bash
+gh pr checkout sanitize/latest
+```
+
+All subsequent steps run from this checkout.
 
 ## Step 1: Identify what changed
 
@@ -70,6 +87,7 @@ Every URL in this output needs justification. Known-safe URLs:
 - `https://github.com/greencm/gstuck` — our repo
 - `https://claude.com/claude-code` — Claude Code link in PR templates
 - `localhost` / `example.com` / `yourapp.com` — documentation examples
+- `https://bun.sh/install` — bun installation instruction in docs
 
 Anything else is a finding.
 
@@ -137,3 +155,9 @@ VERDICT: PASS / FAIL
 
 If PASS: Tell the user the PR is safe to merge.
 If FAIL: List each finding with file:line and what needs to be added to `sanitize.sh`.
+
+## Step 10: Return to main
+
+```bash
+git checkout main
+```
