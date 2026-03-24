@@ -208,6 +208,15 @@ export class BrowserManager {
     return { selector };
   }
 
+  /** Get the ARIA role for a ref selector, or null for CSS selectors / unknown refs. */
+  getRefRole(selector: string): string | null {
+    if (selector.startsWith('@e') || selector.startsWith('@c')) {
+      const entry = this.refMap.get(selector.slice(1));
+      return entry?.role ?? null;
+    }
+    return null;
+  }
+
   getRefCount(): number {
     return this.refMap.size;
   }
