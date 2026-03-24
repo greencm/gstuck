@@ -5,6 +5,10 @@ Removes telemetry, update checks, marketing content, and locks all dependencies 
 
 Repo: https://github.com/greencm/gstuck
 
+## Commit style
+
+Do not add Co-Authored-By lines to commits.
+
 ## Quick Start: Build locally
 
 ```bash
