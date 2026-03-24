@@ -47,11 +47,12 @@ echo "Quarantine window: ${QUARANTINE_DAYS} days"
 # This prevents semver drift if someone runs plain `bun install` instead
 # of `bun install --frozen-lockfile`. Belt and suspenders.
 echo "Pinning package.json to exact versions..."
-sed -i '' 's/"\^/"/g' package.json
-
-if grep -q '"\~' package.json; then
-  sed -i '' 's/"\~/"/g' package.json
-fi
+node -e "
+const fs = require('fs');
+let pkg = fs.readFileSync('package.json', 'utf-8');
+pkg = pkg.replace(/\"\^/g, '\"').replace(/\"~/g, '\"');
+fs.writeFileSync('package.json', pkg);
+"
 
 # Verify
 if grep -qE '"[\^~]' package.json; then
@@ -61,7 +62,12 @@ fi
 
 # ─── Step 2: Un-ignore bun.lock ───────────────────────────────
 echo "Un-ignoring bun.lock..."
-sed -i '' '/^bun\.lock$/d' .gitignore
+node -e "
+const fs = require('fs');
+let gi = fs.readFileSync('.gitignore', 'utf-8');
+gi = gi.split('\n').filter(l => l.trim() !== 'bun.lock').join('\n');
+fs.writeFileSync('.gitignore', gi);
+"
 
 # ─── Step 3: Generate lockfile with integrity hashes ───────────
 echo "Running bun install to generate lockfile with integrity hashes..."

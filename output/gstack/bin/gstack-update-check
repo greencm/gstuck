@@ -1,4 +1,3 @@
 #!/usr/bin/env bash
-# [gstuck] This script has been neutralized for gstuck.
-# Original functionality removed: telemetry/update-check/analytics.
+# [gstuck] Neutralized.
 exit 0

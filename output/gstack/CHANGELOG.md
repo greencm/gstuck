@@ -14,7 +14,7 @@
 - Dependencies pinned to exact versions (no ^ ranges)
 - bun.lock committed for reproducible builds
 - Supply-chain quarantine check (configurable, default 7 days)
-- gstack-upgrade template points to ENTERPRISE_GSTACK_REPO_URL
+- Skill paths rewritten for gstuck layout
 
 ---
 
