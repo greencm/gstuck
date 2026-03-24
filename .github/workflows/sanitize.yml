@@ -19,12 +19,17 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  SANITIZE_BRANCH: sanitize/latest
+
 jobs:
   sanitize:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout gstuck
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -39,7 +44,7 @@ jobs:
           SHA=$(bash scripts/sanitize.sh --resolve-sha /tmp/gstack-upstream --quarantine-days "$DAYS" 2>/dev/null | head -1)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-          # Check if this SHA is already what we have
+          # Check against what's on main (not the PR branch)
           CURRENT_SHA=$(cat upstream.sha 2>/dev/null | tr -d '[:space:]' || echo "")
           if [ "$SHA" = "$CURRENT_SHA" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -88,27 +93,32 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
 
-      - name: Create PR branch
+      - name: Push to sanitize branch (reuse if PR is open)
         if: steps.resolve.outputs.changed == 'true'
         run: |
-          BRANCH="sanitize/gstack-v${{ steps.info.outputs.version }}-${{ steps.info.outputs.short_sha }}"
-          git checkout -b "$BRANCH"
+          # Switch to the sanitize branch, creating it from main if it doesn't exist
+          if git ls-remote --exit-code origin "$SANITIZE_BRANCH" >/dev/null 2>&1; then
+            git checkout -B "$SANITIZE_BRANCH" origin/main
+          else
+            git checkout -b "$SANITIZE_BRANCH"
+          fi
+
           git add upstream.sha output/
           git commit -m "chore: sanitize upstream gstack v${{ steps.info.outputs.version }} (${{ steps.info.outputs.short_sha }})"
-          git push -u origin "$BRANCH"
-          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          git push --force-with-lease origin "$SANITIZE_BRANCH"
 
-      - name: Create Pull Request
+      - name: Create or update Pull Request
         if: steps.resolve.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr create \
-            --title "Sanitize: gstack v${{ steps.info.outputs.version }} (${{ steps.info.outputs.short_sha }})" \
-            --body "$(cat <<'EOF'
+          # Check if a PR already exists for this branch
+          EXISTING_PR=$(gh pr list --head "$SANITIZE_BRANCH" --state open --json number --jq '.[0].number' || true)
+
+          BODY="$(cat <<EOF
           ## Upstream update
 
-          - **Upstream SHA:** `${{ steps.resolve.outputs.sha }}`
+          - **Upstream SHA:** \`${{ steps.resolve.outputs.sha }}\`
           - **Upstream version:** v${{ steps.info.outputs.version }}
           - **Commit date:** ${{ steps.info.outputs.commit_date }}
           - **Commit quarantine:** ${{ inputs.quarantine_days || '7' }} days
@@ -116,23 +126,37 @@ jobs:
 
           ## Automated checks passed
 
-          - [x] `sanitize.sh` — all telemetry/phone-home patterns removed
-          - [x] `pin-deps.sh` — dependencies locked by SHA-512 integrity hash
-          - [x] `bun run build` — SKILL.md regeneration + browse binary compiled
-          - [x] `verify.sh` — static verification gate passed
+          - [x] \`sanitize.sh\` — all telemetry/phone-home patterns removed
+          - [x] \`pin-deps.sh\` — dependencies locked by SHA-512 integrity hash
+          - [x] \`bun run build\` — SKILL.md regeneration + browse binary compiled
+          - [x] \`verify.sh\` — static verification gate passed
 
           ## Before merging
 
           Run the **AI security review** using Claude Code:
 
-          ```
+          \`\`\`
           /review-sanitize
-          ```
+          \`\`\`
 
           This reviews the diff for new external URLs, network calls, data collection,
           or re-added telemetry that the static checks can't catch.
 
-          See CLAUDE.md "Verify: AI Security Review" for the full protocol.
+          See CLAUDE.md for the full protocol.
           EOF
-          )" \
-            --label "sanitize"
+          )"
+
+          TITLE="Sanitize: gstack v${{ steps.info.outputs.version }} (${{ steps.info.outputs.short_sha }})"
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Updating existing PR #${EXISTING_PR}"
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body "$BODY"
+            gh pr comment "$EXISTING_PR" --body "Updated to upstream \`${{ steps.resolve.outputs.sha }}\` (v${{ steps.info.outputs.version }}, ${{ steps.info.outputs.commit_date }}). All automated checks passed."
+          else
+            echo "Creating new PR"
+            gh pr create \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --head "$SANITIZE_BRANCH" \
+              --base main
+          fi
