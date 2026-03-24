@@ -404,6 +404,22 @@ if [ -f "CHANGELOG.md" ]; then
   echo "$ENTRY$(cat CHANGELOG.md)" > CHANGELOG.md
 fi
 
+# ─── Step 15: Rewrite skill paths for gstuck layout ──────────
+# Upstream hardcodes ~/.claude/skills/gstack/ everywhere. Gstuck lives at
+# ~/.claude/skills/gstuck/output/gstack/ so all path references must update.
+echo "Rewriting skill paths for gstuck layout..."
+
+# In the generator (source of truth for all preambles/browse setup)
+sed -i '' 's|skills/gstack/|skills/gstuck/output/gstack/|g' scripts/gen-skill-docs.ts
+
+# In pre-generated SKILL.md files
+find . \( -name 'SKILL.md' -o -name '*.tmpl' \) -not -path '*/node_modules/*' \
+  -exec sed -i '' 's|skills/gstack/|skills/gstuck/output/gstack/|g' {} +
+
+# In the browse setup script and other docs
+find . \( -name '*.md' -o -name '*.ts' \) -not -path '*/node_modules/*' -not -path '*/test/*' \
+  -exec sed -i '' 's|skills/gstack/|skills/gstuck/output/gstack/|g' {} + 2>/dev/null || true
+
 echo ""
 echo "=== Sanitization complete ==="
 echo "Run scripts/pin-deps.sh next."

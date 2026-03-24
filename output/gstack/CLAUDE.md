@@ -102,7 +102,7 @@ symlink or a real copy. If it's a symlink to your working directory, be aware th
 - Template changes + `bun run gen:skill-docs` immediately affect all gstack invocations
 - Breaking changes to SKILL.md.tmpl files can break concurrent gstack sessions
 - During large refactors, remove the symlink (`rm .claude/skills/gstack`) so the
-  global install at `~/.claude/skills/gstack/` is used instead
+  global install at `~/.claude/skills/gstuck/output/gstack/` is used instead
 
 **For plan reviews:** When reviewing plans that modify skill templates or the
 gen-skill-docs pipeline, consider whether the changes should be tested in isolation
@@ -136,10 +136,10 @@ regenerated SKILL.md shifts prompt context.
 
 ## Deploying to the active skill
 
-The active skill lives at `~/.claude/skills/gstack/`. After making changes:
+The active skill lives at `~/.claude/skills/gstuck/output/gstack/`. After making changes:
 
 1. Push your branch
 2. Fetch and reset in the skill directory: `cd ~/.claude/skills/gstack && git fetch origin && git reset --hard origin/main`
 3. Rebuild: `cd ~/.claude/skills/gstack && bun run build`
 
-Or copy the binary directly: `cp browse/dist/browse ~/.claude/skills/gstack/browse/dist/browse`
+Or copy the binary directly: `cp browse/dist/browse ~/.claude/skills/gstuck/output/gstack/browse/dist/browse`

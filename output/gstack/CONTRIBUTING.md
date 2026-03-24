@@ -4,7 +4,7 @@ Thanks for wanting to make gstack better. Whether you're fixing a typo in a skil
 
 ## Quick start
 
-gstack skills are Markdown files that Claude Code discovers from a `skills/` directory. Normally they live at `~/.claude/skills/gstack/` (your global install). But when you're developing gstack itself, you want Claude Code to use the skills *in your working tree* — so edits take effect instantly without copying or deploying anything.
+gstack skills are Markdown files that Claude Code discovers from a `skills/` directory. Normally they live at `~/.claude/skills/gstuck/output/gstack/` (your global install). But when you're developing gstack itself, you want Claude Code to use the skills *in your working tree* — so edits take effect instantly without copying or deploying anything.
 
 That's what dev mode does. It symlinks your repo into the local `.claude/skills/` directory so Claude Code reads skills straight from your checkout.
 
@@ -29,7 +29,7 @@ a report to `~/.gstack/contributor-logs/` with what happened, repro steps, and w
 would make it better.
 
 ```bash
-~/.claude/skills/gstack/bin/gstack-config set gstack_contributor true
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set gstack_contributor true
 ```
 
 The logs are for **you**. When something bugs you enough to fix, the report is
@@ -268,7 +268,7 @@ it up immediately.
 rm .claude/skills/gstack
 ```
 
-Claude Code falls back to `~/.claude/skills/gstack/` automatically.
+Claude Code falls back to `~/.claude/skills/gstuck/output/gstack/` automatically.
 
 ### Alternative: point your global install at a branch
 

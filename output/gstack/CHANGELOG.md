@@ -245,7 +245,7 @@
 ### Removed
 - `CONDUCTOR_PORT` magic offset (`browse_port = CONDUCTOR_PORT - 45600`)
 - Port scan range 9400-9409
-- Legacy fallback to `~/.claude/skills/gstack/browse/src/server.ts`
+- Legacy fallback to `~/.claude/skills/gstuck/output/gstack/browse/src/server.ts`
 - `DEVELOPING_GSTACK.md` (renamed to CONTRIBUTING.md)
 
 ## 0.3.1 — 2026-03-12

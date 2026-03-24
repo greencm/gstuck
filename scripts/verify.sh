@@ -95,6 +95,18 @@ if [ -f "scripts/gen-skill-docs.ts" ]; then
   fi
 fi
 
+# ─── Skill paths rewritten for gstuck layout ─────────────────
+# Generated SKILL.md preambles must not reference the old skills/gstack/ path
+# Exclude test/ (test fixtures reference old paths), CHANGELOG, README
+OLD_PATH_MATCHES=$(grep -rn 'skills/gstack/' --include='*.md' --include='*.ts' --include='*.tmpl' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG | grep -v README \
+  | grep -v 'test/' | grep -v 'skills/gstuck/output/gstack/' || true)
+if [ -n "$OLD_PATH_MATCHES" ]; then
+  echo "FAIL: old skills/gstack/ paths found (should be skills/gstuck/output/gstack/):"
+  echo "$OLD_PATH_MATCHES" | head -10 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── Dependency pinning checks ────────────────────────────────
 if grep -q '"\^' package.json 2>/dev/null; then
   echo "FAIL: package.json still has ^ range dependencies"
