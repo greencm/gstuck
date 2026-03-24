@@ -286,12 +286,11 @@ for hook in careful/bin/check-careful.sh freeze/bin/check-freeze.sh; do
   fi
 done
 
-# ─── Step 7: Neutralize gstack-upgrade template ────────────────
+# ─── Step 7: Point gstack-upgrade at gstuck repo ──────────────
 UPGRADE_TMPL="gstack-upgrade/SKILL.md.tmpl"
 if [ -f "$UPGRADE_TMPL" ]; then
-  echo "Neutralizing upgrade template..."
-  sed -i '' 's|https://github.com/garrytan/gstack.git|ENTERPRISE_GSTACK_REPO_URL|g' "$UPGRADE_TMPL"
-  sed -i '' 's|git reset --hard origin/main|echo "[gstuck] Upgrades managed by your organization. See gstuck README."|g' "$UPGRADE_TMPL"
+  echo "Pointing upgrade template at gstuck..."
+  sed -i '' 's|https://github.com/garrytan/gstack.git|https://github.com/greencm/gstuck.git|g' "$UPGRADE_TMPL"
 fi
 
 # ─── Step 8: Remove YC referral from office-hours ──────────────

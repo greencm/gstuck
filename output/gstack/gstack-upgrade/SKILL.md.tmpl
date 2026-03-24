@@ -111,7 +111,7 @@ Use the install type and directory detected in Step 2:
 cd "$INSTALL_DIR"
 STASH_OUTPUT=$(git stash 2>&1)
 git fetch origin
-echo "[gstuck] Upgrades managed by your organization. See gstuck README."
+git reset --hard origin/main
 ./setup
 ```
 If `$STASH_OUTPUT` contains "Saved working directory", warn the user: "Note: local changes were stashed. Run `git stash pop` in the skill directory to restore them."
@@ -120,7 +120,7 @@ If `$STASH_OUTPUT` contains "Saved working directory", warn the user: "Note: loc
 ```bash
 PARENT=$(dirname "$INSTALL_DIR")
 TMP_DIR=$(mktemp -d)
-git clone --depth 1 ENTERPRISE_GSTACK_REPO_URL "$TMP_DIR/gstack"
+git clone --depth 1 https://github.com/greencm/gstuck.git "$TMP_DIR/gstack"
 mv "$INSTALL_DIR" "$INSTALL_DIR.bak"
 mv "$TMP_DIR/gstack" "$INSTALL_DIR"
 cd "$INSTALL_DIR" && ./setup
