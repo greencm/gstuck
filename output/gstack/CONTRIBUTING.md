@@ -54,6 +54,10 @@ the issue, fix it, and open a PR.
 This is the best way to contribute: fix gstack while doing your real work, in the
 project where you actually felt the pain.
 
+### Session awareness
+
+When you have 3+ gstack sessions open simultaneously, every question tells you which project, which branch, and what's happening. No more staring at a question thinking "wait, which window is this?" The format is consistent across all 13 skills.
+
 ## Working on gstack inside the gstack repo
 
 When you're editing gstack skills and want to test them by actually using gstack

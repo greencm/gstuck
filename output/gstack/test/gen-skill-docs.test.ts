@@ -70,7 +70,7 @@ describe('gen-skill-docs', () => {
     { dir: 'setup-browser-cookies', name: 'setup-browser-cookies' },
     { dir: 'gstack-upgrade', name: 'gstack-upgrade' },
     { dir: 'plan-design-review', name: 'plan-design-review' },
-    { dir: 'qa-design-review', name: 'qa-design-review' },
+    { dir: 'design-review', name: 'design-review' },
     { dir: 'design-consultation', name: 'design-consultation' },
   ];
 
@@ -320,5 +320,33 @@ describe('description quality evals', () => {
     const tipsSection = content.slice(content.indexOf('## Tips'));
     expect(tipsSection).toContain('→');
     expect(tipsSection).not.toContain('->');
+  });
+});
+
+describe('REVIEW_DASHBOARD resolver', () => {
+  const REVIEW_SKILLS = ['plan-ceo-review', 'plan-eng-review', 'plan-design-review'];
+
+  for (const skill of REVIEW_SKILLS) {
+    test(`review dashboard appears in ${skill} generated file`, () => {
+      const content = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md'), 'utf-8');
+      expect(content).toContain('reviews.jsonl');
+      expect(content).toContain('REVIEW READINESS DASHBOARD');
+    });
+  }
+
+  test('review dashboard appears in ship generated file', () => {
+    const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
+    expect(content).toContain('reviews.jsonl');
+    expect(content).toContain('REVIEW READINESS DASHBOARD');
+  });
+
+  test('resolver output contains key dashboard elements', () => {
+    const content = fs.readFileSync(path.join(ROOT, 'plan-ceo-review', 'SKILL.md'), 'utf-8');
+    expect(content).toContain('VERDICT');
+    expect(content).toContain('CLEARED');
+    expect(content).toContain('Eng Review');
+    expect(content).toContain('7 days');
+    expect(content).toContain('Design Review');
+    expect(content).toContain('skip_eng_review');
   });
 });
