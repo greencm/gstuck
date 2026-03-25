@@ -5,8 +5,11 @@
 ```bash
 bun install          # install dependencies
 bun test             # run free tests (browse + snapshot + skill validation)
-bun run test:evals   # run paid evals: LLM judge + E2E (~$4/run)
-bun run test:e2e     # run E2E tests only (~$3.85/run)
+bun run test:evals   # run paid evals: LLM judge + E2E (diff-based, ~$4/run max)
+bun run test:evals:all  # run ALL paid evals regardless of diff
+bun run test:e2e     # run E2E tests only (diff-based, ~$3.85/run max)
+bun run test:e2e:all # run ALL E2E tests regardless of diff
+bun run eval:select  # show which tests would run based on current diff
 bun run dev <cmd>    # run CLI in dev mode, e.g. bun run dev goto https://example.com
 bun run build        # gen docs + compile binaries
 bun run gen:skill-docs  # regenerate SKILL.md files from templates
@@ -20,6 +23,12 @@ bun run eval:summary # aggregate stats across all eval runs
 `test:evals` requires `ANTHROPIC_API_KEY`. E2E tests stream progress in real-time
 (tool-by-tool via `--output-format stream-json --verbose`). Results are persisted
 to `~/.gstack-dev/evals/` with auto-comparison against the previous run.
+
+**Diff-based test selection:** `test:evals` and `test:e2e` auto-select tests based
+on `git diff` against the base branch. Each test declares its file dependencies in
+`test/helpers/touchfiles.ts`. Changes to global touchfiles (session-runner, eval-store,
+llm-judge, gen-skill-docs) trigger all tests. Use `EVALS_ALL=1` or the `:all` script
+variants to force all tests. Run `eval:select` to preview which tests would run.
 
 ## Project structure
 
@@ -44,7 +53,7 @@ gstack/
 │   └── skill-e2e.test.ts         # Tier 2: E2E via claude -p (~$3.85/run)
 ├── qa-only/         # /qa-only skill (report-only QA, no fixes)
 ├── plan-design-review/  # /plan-design-review skill (report-only design audit)
-├── qa-design-review/    # /qa-design-review skill (design audit + fix loop)
+├── design-review/    # /design-review skill (design audit + fix loop)
 ├── ship/            # Ship workflow skill
 ├── review/          # PR review skill
 ├── plan-ceo-review/ # /plan-ceo-review skill
@@ -110,6 +119,22 @@ symlink or a real copy. If it's a symlink to your working directory, be aware th
 gen-skill-docs pipeline, consider whether the changes should be tested in isolation
 before going live (especially if the user is actively using gstack in other windows).
 
+## Commit style
+
+**Always bisect commits.** Every commit should be a single logical change. When
+you've made multiple changes (e.g., a rename + a rewrite + new tests), split them
+into separate commits before pushing. Each commit should be independently
+understandable and revertable.
+
+Examples of good bisection:
+- Rename/move separate from behavior changes
+- Test infrastructure (touchfiles, helpers) separate from test implementations
+- Template changes separate from generated file regeneration
+- Mechanical refactors separate from new features
+
+When the user says "bisect commit" or "bisect and push," split staged/unstaged
+changes into logical commits and push.
+
 ## CHANGELOG style
 
 CHANGELOG.md is **for users**, not contributors. Write it like product release notes:
@@ -120,6 +145,23 @@ CHANGELOG.md is **for users**, not contributors. Write it like product release n
 - Every entry should make someone think "oh nice, I want to try that."
 - No jargon: say "every question now tells you which project and branch you're in" not
   "AskUserQuestion format standardized across skill templates via preamble resolver."
+
+## AI effort compression
+
+When estimating or discussing effort, always show both human-team and CC+gstack time:
+
+| Task type | Human team | CC+gstack | Compression |
+|-----------|-----------|-----------|-------------|
+| Boilerplate / scaffolding | 2 days | 15 min | ~100x |
+| Test writing | 1 day | 15 min | ~50x |
+| Feature implementation | 1 week | 30 min | ~30x |
+| Bug fix + regression test | 4 hours | 15 min | ~20x |
+| Architecture / design | 2 days | 4 hours | ~5x |
+| Research / exploration | 1 day | 3 hours | ~3x |
+
+Completeness is cheap. Don't recommend shortcuts when the complete implementation
+is a "lake" (achievable) not an "ocean" (multi-quarter migration). See the
+Completeness Principle in the skill preamble for the full philosophy.
 
 ## Local plans
 
