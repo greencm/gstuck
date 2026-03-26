@@ -79,49 +79,40 @@ tarball doesn't match its SHA-512 hash.
 
 ## /review-sanitize — AI Security Review for Sanitize PRs
 
-When the daily action opens a PR, check out the branch and run this review.
+When the daily action opens a PR, run `/review-sanitize` to review it.
 
 **TODO:** Automate this as a GitHub Action with Claude API so PRs get
-auto-reviewed. For now, run manually:
+auto-reviewed. For now, run manually.
 
-### Protocol
+### Two-phase workflow
 
-1. Check out the sanitize PR branch
-2. Generate the diff: `git diff main...HEAD -- output/`
-3. Review every changed file in `output/gstack/` (excluding `node_modules/`) for:
+**Phase 1 (REVIEW):** Fetches the PR diff via `git fetch` + `git diff` without
+checking out the sanitize branch. Scans for telemetry, external URLs, network
+calls, data collection, re-added gutted functions, and new telemetry files.
+Produces a PASS/FAIL report.
 
-   - **External URLs** — any `https://` not pointing to localhost or example.com
-   - **Network calls** — `curl`, `fetch(`, `WebFetch`, `WebSearch`, HTTP clients
-   - **Analytics/telemetry writes** — `~/.gstack/analytics/`, JSONL appends, `.pending-*`
-   - **Identifying information** — `hostname`, `whoami`, `uname`, SHA-256 of user info
-   - **Environment variable leaks** — env reads that could identify the user/org
-   - **Background processes** — `&` at end of commands, `nohup`, backgrounded curls
-   - **Telemetry library imports** — analytics SDKs, Supabase client, tracking pixels
-   - **Previously-gutted functions re-added** — check `generateUpgradeCheck`,
-     `generateLakeIntro`, `generateTelemetryPrompt` in `scripts/gen-skill-docs.ts`
-     still return empty strings
+**Phase 2a (PASS):** Approve and merge the PR.
 
-4. For `SKILL.md.tmpl` files specifically:
-   - Does the preamble bash block contain any network calls?
-   - Does the epilogue write to any file outside the project directory?
-   - Are there AskUserQuestion prompts that collect info beyond the task?
+**Phase 2b (FAIL):** Fix `sanitize.sh` / `transforms.mjs` on main (already there —
+never left), commit, push, re-trigger the workflow, then loop back to Phase 1.
 
-### Report format
+### Why we never check out the sanitize branch
 
-```
-GSTUCK SECURITY REVIEW — <upstream SHA>
-=======================================
-Files reviewed: N
-New external URLs found: [list with file:line, or NONE]
-New data collection found: [list with file:line, or NONE]
-New network calls found: [list with file:line, or NONE]
-New analytics writes found: [list with file:line, or NONE]
-Re-added gutted functions: [list or NONE]
-VERDICT: PASS / FAIL (with details for each finding)
-```
+The `sanitize/latest` branch is force-pushed by the workflow. If we check it out
+locally and then push fixes to main + re-trigger, the local branch diverges from
+remote and requires `git reset --hard` to recover. By using `git fetch` +
+`git show origin/sanitize/latest:path` we avoid this entirely.
 
-If PASS: approve and merge the PR.
-If FAIL: list each finding. Update `sanitize.sh` to handle new patterns, re-run.
+### What the review checks
+
+- **External URLs** — any new `https://` not on the known-safe allowlist
+- **Network calls** — `curl`, `fetch(`, Supabase, HTTP clients in executable code
+- **Analytics/telemetry writes** — `~/.gstack/analytics/`, `skill-usage.jsonl`, `.pending-*`
+- **Identifying information** — `hostname`, `whoami`, `uname`, SHA-256 of user info
+- **Gutted functions** — `generateUpgradeCheck`, `generateLakeIntro`, `generateTelemetryPrompt`
+- **New telemetry files** — any added files related to analytics/telemetry infrastructure
+
+See `.claude/skills/review-sanitize/SKILL.md` for the full protocol and allowlists.
 
 ## Installing gstuck (for users)
 
