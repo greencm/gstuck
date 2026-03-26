@@ -3,7 +3,9 @@ name: review
 version: 1.0.0
 description: |
   Pre-landing PR review. Analyzes diff against the base branch for SQL safety, LLM trust
-  boundary violations, conditional side effects, and other structural issues.
+  boundary violations, conditional side effects, and other structural issues. Use when
+  asked to "review this PR", "code review", "pre-landing review", or "check my diff".
+  Proactively suggest when the user is about to merge or land code changes.
 allowed-tools:
   - Bash
   - Read
@@ -26,11 +28,16 @@ touch ~/.gstack/sessions/"$PPID"
 _SESSIONS=$(find ~/.gstack/sessions -mmin -120 -type f 2>/dev/null | wc -l | tr -d ' ')
 find ~/.gstack/sessions -mmin +120 -type f -delete 2>/dev/null || true
 _CONTRIB=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get gstack_contributor 2>/dev/null || true)
+_PROACTIVE=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get proactive 2>/dev/null || echo "true")
 _BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
 echo "BRANCH: $_BRANCH"
+echo "PROACTIVE: $_PROACTIVE"
 _LAKE_SEEN=$([ -f ~/.gstack/.completeness-intro-seen ] && echo "yes" || echo "no")
 echo "LAKE_INTRO: $_LAKE_SEEN"
 ```
+
+If `PROACTIVE` is `"false"`, do not proactively suggest gstack skills — only invoke
+them when the user explicitly asks. The user opted out of proactive suggestions.
 
 If output shows `UPGRADE_AVAILABLE <old> <new>`: read `~/.claude/skills/gstuck/output/gstack/gstack-upgrade/SKILL.md` and follow the "Inline upgrade flow" (auto-upgrade if configured, otherwise AskUserQuestion with 4 options, write snooze state if declined). If `JUST_UPGRADED <from> <to>`: tell user "Running gstack v{to} (just updated!)" and continue.
 
@@ -120,6 +127,31 @@ Hey gstack team — ran into this while using /{skill-name}:
 
 Slug: lowercase, hyphens, max 60 chars (e.g. `browse-js-no-await`). Skip if file already exists. Max 3 reports per session. File inline and continue — don't stop the workflow. Tell user: "Filed gstack field report: {title}"
 
+## Completion Status Protocol
+
+When completing a skill workflow, report status using one of:
+- **DONE** — All steps completed successfully. Evidence provided for each claim.
+- **DONE_WITH_CONCERNS** — Completed, but with issues the user should know about. List each concern.
+- **BLOCKED** — Cannot proceed. State what is blocking and what was tried.
+- **NEEDS_CONTEXT** — Missing information required to continue. State exactly what you need.
+
+### Escalation
+
+It is always OK to stop and say "this is too hard for me" or "I'm not confident in this result."
+
+Bad work is worse than no work. You will not be penalized for escalating.
+- If you have attempted a task 3 times without success, STOP and escalate.
+- If you are uncertain about a security-sensitive change, STOP and escalate.
+- If the scope of work exceeds what you can verify, STOP and escalate.
+
+Escalation format:
+```
+STATUS: BLOCKED | NEEDS_CONTEXT
+REASON: [1-2 sentences]
+ATTEMPTED: [what you tried]
+RECOMMENDATION: [what the user should do next]
+```
+
 ## Step 0: Detect base branch
 
 Determine which branch this PR targets. Use the result as "the base branch" in all subsequent steps.
@@ -150,6 +182,40 @@ You are running the `/review` workflow. Analyze the current branch's diff agains
 1. Run `git branch --show-current` to get the current branch.
 2. If on the base branch, output: **"Nothing to review — you're on the base branch or have no changes against it."** and stop.
 3. Run `git fetch origin <base> --quiet && git diff origin/<base> --stat` to check if there's a diff. If no diff, output the same message and stop.
+
+---
+
+## Step 1.5: Scope Drift Detection
+
+Before reviewing code quality, check: **did they build what was requested — nothing more, nothing less?**
+
+1. Read `TODOS.md` (if it exists). Read PR description (`gh pr view --json body --jq .body 2>/dev/null || true`).
+   Read commit messages (`git log origin/<base>..HEAD --oneline`).
+   **If no PR exists:** rely on commit messages and TODOS.md for stated intent — this is the common case since /review runs before /ship creates the PR.
+2. Identify the **stated intent** — what was this branch supposed to accomplish?
+3. Run `git diff origin/<base> --stat` and compare the files changed against the stated intent.
+4. Evaluate with skepticism:
+
+   **SCOPE CREEP detection:**
+   - Files changed that are unrelated to the stated intent
+   - New features or refactors not mentioned in the plan
+   - "While I was in there..." changes that expand blast radius
+
+   **MISSING REQUIREMENTS detection:**
+   - Requirements from TODOS.md/PR description not addressed in the diff
+   - Test coverage gaps for stated requirements
+   - Partial implementations (started but not finished)
+
+5. Output (before the main review begins):
+   ```
+   Scope Check: [CLEAN / DRIFT DETECTED / REQUIREMENTS MISSING]
+   Intent: <1-line summary of what was requested>
+   Delivered: <1-line summary of what the diff actually does>
+   [If drift: list each out-of-scope change]
+   [If missing: list each unaddressed requirement]
+   ```
+
+6. This is **INFORMATIONAL** — does not block the review. Proceed to Step 2.
 
 ---
 
@@ -203,7 +269,7 @@ Follow the output format specified in the checklist. Respect the suppressions �
 Check if the diff touches frontend files using `gstack-diff-scope`:
 
 ```bash
-eval $(~/.claude/skills/gstuck/output/gstack/bin/gstack-diff-scope <base> 2>/dev/null)
+source <(~/.claude/skills/gstuck/output/gstack/bin/gstack-diff-scope <base> 2>/dev/null)
 ```
 
 **If `SCOPE_FRONTEND=false`:** Skip design review silently. No output.
@@ -226,12 +292,10 @@ eval $(~/.claude/skills/gstuck/output/gstack/bin/gstack-diff-scope <base> 2>/dev
 6. **Log the result** for the Review Readiness Dashboard:
 
 ```bash
-eval $(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)
-mkdir -p ~/.gstack/projects/$SLUG
-echo '{"skill":"design-review-lite","timestamp":"TIMESTAMP","status":"STATUS","findings":N,"auto_fixed":M}' >> ~/.gstack/projects/$SLUG/$BRANCH-reviews.jsonl
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"design-review-lite","timestamp":"TIMESTAMP","status":"STATUS","findings":N,"auto_fixed":M,"commit":"COMMIT"}'
 ```
 
-Substitute: TIMESTAMP = ISO 8601 datetime, STATUS = "clean" if 0 findings or "issues_found", N = total findings, M = auto-fixed count.
+Substitute: TIMESTAMP = ISO 8601 datetime, STATUS = "clean" if 0 findings or "issues_found", N = total findings, M = auto-fixed count, COMMIT = output of `git rev-parse --short HEAD`.
 
 Include any design findings alongside the findings from Step 4. They follow the same Fix-First flow in Step 5 — AUTO-FIX for mechanical CSS fixes, ASK for everything else.
 
@@ -285,6 +349,16 @@ Apply fixes for items where the user chose "Fix." Output what was fixed.
 
 If no ASK items exist (everything was AUTO-FIX), skip the question entirely.
 
+### Verification of claims
+
+Before producing the final review output:
+- If you claim "this pattern is safe" → cite the specific line proving safety
+- If you claim "this is handled elsewhere" → read and cite the handling code
+- If you claim "tests cover this" → name the test file and method
+- Never say "likely handled" or "probably tested" — verify or flag as unknown
+
+**Rationalization prevention:** "This looks fine" is not a finding. Either cite evidence it IS fine, or flag it as unverified.
+
 ### Greptile comment resolution
 
 After outputting your own findings, if Greptile comments were classified in Step 2.5:
@@ -336,6 +410,55 @@ Cross-reference the diff against documentation files. For each `.md` file in the
 This is informational only — never critical. The fix action is `/document-release`.
 
 If no documentation files exist, skip this step silently.
+
+---
+
+## Step 5.7: Codex second opinion (optional)
+
+After completing the review, check if the Codex CLI is available:
+
+```bash
+which codex 2>/dev/null && echo "CODEX_AVAILABLE" || echo "CODEX_NOT_AVAILABLE"
+```
+
+If Codex is available, use AskUserQuestion:
+
+```
+Review complete. Want an independent second opinion from Codex (OpenAI)?
+
+A) Run Codex code review — independent diff review with pass/fail gate
+B) Run Codex adversarial challenge — try to find ways this code will fail in production
+C) Both — review first, then adversarial challenge
+D) Skip — no Codex review needed
+```
+
+If the user chooses A, B, or C:
+
+**For code review (A or C):** Run `codex review --base <base>` with a 5-minute timeout.
+Present the full output verbatim under a `CODEX SAYS (code review):` header.
+Check the output for `[P1]` markers — if found, note `GATE: FAIL`, otherwise `GATE: PASS`.
+After presenting, compare Codex's findings with your own review findings from Steps 4-5
+and output a CROSS-MODEL ANALYSIS showing what both found, what only Codex found,
+and what only Claude found.
+
+**For adversarial challenge (B or C):** Run:
+```bash
+codex exec "Review the changes on this branch against the base branch. Run git diff origin/<base> to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, failure modes. Be adversarial." -s read-only
+```
+Present the full output verbatim under a `CODEX SAYS (adversarial challenge):` header.
+
+**Only if a code review ran (user chose A or C):** Persist the Codex review result to the review log:
+```bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","gate":"GATE"}'
+```
+
+Substitute: STATUS ("clean" if PASS, "issues_found" if FAIL), GATE ("pass" or "fail").
+
+**Do NOT persist a codex-review entry when only the adversarial challenge (B) ran** —
+there is no gate verdict to record, and a false entry would make the Review Readiness
+Dashboard believe a code review happened when it didn't.
+
+If Codex is not available, skip this step silently.
 
 ---
 
