@@ -210,4 +210,16 @@ for (const f of findFiles(ROOT, ['.md', '.tmpl', '.ts'], ['node_modules', '.git'
 }
 console.log('  Rewrote skill paths for gstuck layout');
 
+// ─── Step 16: Remove analytics script from package.json ────────
+
+const PKG_JSON = 'package.json';
+if (existsSync(PKG_JSON)) {
+  let pkg = readFile(PKG_JSON);
+  pkg = pkg.replace(/\n\s*"analytics":\s*"[^"]*",?/g, '');
+  // Clean trailing comma before closing brace in scripts block
+  pkg = pkg.replace(/,(\s*\})/g, '$1');
+  writeFile(PKG_JSON, pkg);
+  console.log('  Removed analytics script from package.json');
+}
+
 console.log('Transforms complete.');

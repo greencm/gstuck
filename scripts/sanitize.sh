@@ -146,6 +146,10 @@ echo "Source ready."
 echo "Removing supabase/..."
 rm -rf supabase/
 
+# ─── Step 2b: Delete analytics infrastructure ────────────────────
+echo "Removing analytics CLI and tests..."
+rm -f scripts/analytics.ts test/analytics.test.ts
+
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard; do
   if [ -f "$script" ]; then
