@@ -78,6 +78,10 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      - name: Post-build fixup
+        if: steps.resolve.outputs.changed == 'true'
+        run: cd output/gstack && node ../../scripts/post-build-fixup.mjs
+
       - name: Static verification
         if: steps.resolve.outputs.changed == 'true'
         run: bash scripts/verify.sh
