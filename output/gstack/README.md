@@ -56,6 +56,24 @@ Open Claude Code and paste this. Claude does the rest.
 
 Real files get committed to your repo (not a submodule), so `git clone` just works. Everything lives inside `.claude/`. Nothing touches your PATH or runs in the background.
 
+### Codex, Gemini CLI, or Cursor
+
+gstack works on any agent that supports the [SKILL.md standard](https://github.com/anthropics/claude-code). Skills live in `.agents/skills/` and are discovered automatically.
+
+```bash
+git clone https://github.com/greencm/gstuck.git ~/.codex/skills/gstack
+cd ~/.codex/skills/gstack && ./setup --host codex
+```
+
+Or let setup auto-detect which agents you have installed:
+
+```bash
+git clone https://github.com/greencm/gstuck.git ~/gstack
+cd ~/gstack && ./setup --host auto
+```
+
+This installs to `~/.claude/skills/gstack` and/or `~/.codex/skills/gstack` depending on what's available. All 21 skills work across all supported agents. Hook-based safety skills (careful, freeze, guard) use inline safety advisory prose on non-Claude hosts.
+
 ## See it work
 
 ```
@@ -197,6 +215,7 @@ Fifteen specialists and six power tools. All slash commands. All Markdown. All f
 | [Browser Reference](BROWSER.md) | Full command reference for `/browse` |
 | [Contributing](CONTRIBUTING.md) | Dev setup, testing, contributor mode, and dev mode |
 | [Changelog](CHANGELOG.md) | What's new in every version |
+
 
 ## Troubleshooting
 
