@@ -6,8 +6,8 @@ description: |
   Phase 1 (REVIEW): Fetch PR diff from GitHub, scan for telemetry, external URLs,
   network calls, data collection. Never leaves main branch. Produces PASS/FAIL report.
   Phase 2a (PASS): Approve and merge the PR.
-  Phase 2b (FAIL): Fix sanitize.sh/transforms.mjs on main, commit, push, re-trigger
-  the workflow, and tell the user to re-run /review-sanitize.
+  Phase 2b (FAIL): Create a fix/sanitize-* branch, fix sanitize scripts, verify via
+  the workflow's verify_only mode, PR the fix to main, then re-trigger sanitize.
 allowed-tools:
   - Bash
   - Read
@@ -240,29 +240,55 @@ If the review found issues:
    gh pr comment <NUMBER> --body "<findings summary>"
    ```
 
-2. Fix the sanitize scripts. You are already on `main` (never left). Edit:
-   - `scripts/sanitize.sh` — for file deletions (`rm -f`)
-   - `scripts/transforms.mjs` — for content transforms (line removal, regex replacement)
-
-3. Commit and push the fix to main:
+2. Create a fix branch off main:
    ```bash
-   git add scripts/sanitize.sh scripts/transforms.mjs
-   git commit -m "<descriptive message about what was stripped>"
-   git push
+   ISSUE_SLUG="<short-description>"   # e.g. "strip-telemetry-epilogue"
+   git checkout -b "fix/sanitize-${ISSUE_SLUG}" main
    ```
 
-4. Re-trigger the workflow:
+3. Fix the sanitize scripts on the fix branch. Edit as needed:
+   - `scripts/sanitize.sh` — for file deletions (`rm -f`)
+   - `scripts/transforms.mjs` — for content transforms (line removal, regex replacement)
+   - `scripts/post-build-fixup.mjs` — for post-build patches
+   - `scripts/verify.sh` — for new verification checks
+
+4. Commit and push the fix branch:
    ```bash
+   git add scripts/
+   git commit -m "<descriptive message about what was stripped>"
+   git push -u origin "fix/sanitize-${ISSUE_SLUG}"
+   ```
+
+5. Run the sanitize workflow from the fix branch in verify-only mode:
+   ```bash
+   gh workflow run sanitize.yml --ref "fix/sanitize-${ISSUE_SLUG}" -f verify_only=true
+   ```
+
+   Wait for it:
+   ```bash
+   sleep 5
+   RUN_ID=$(gh run list --workflow=sanitize.yml --branch="fix/sanitize-${ISSUE_SLUG}" --limit 1 --json databaseId --jq '.[0].databaseId')
+   gh run watch "$RUN_ID" --exit-status
+   ```
+
+   If it fails, fix the issue on the branch and re-run (steps 3-5).
+
+6. Once the workflow passes, create a PR to merge the fix into main:
+   ```bash
+   gh pr create \
+     --title "fix: <description>" \
+     --body "Fixes sanitize issue found during review of PR #<NUMBER>.
+   Verified: ran sanitize workflow from this branch with verify_only=true — passed."
+   ```
+
+7. Tell the user the fix PR is ready for review and merge. Once merged:
+   ```bash
+   git checkout main
+   git pull
    gh workflow run sanitize.yml
    ```
 
-5. Wait for it to complete:
-   ```bash
-   gh run list --workflow=sanitize.yml --limit 1 --json databaseId,status --jq '.[0]'
-   # Then watch:
-   gh run watch <ID> --exit-status
-   ```
-
-6. Once the workflow succeeds, loop back to Phase 1 (re-fetch, re-review).
-   The `git fetch origin sanitize/latest` will pick up the new force-pushed branch
+8. Wait for the sanitize workflow to complete, then loop back to Phase 1
+   to re-review the updated `sanitize/latest` PR.
+   `git fetch origin sanitize/latest` will pick up the new force-pushed branch
    cleanly because we never checked it out locally.

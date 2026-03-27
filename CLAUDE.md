@@ -49,6 +49,9 @@ bash scripts/pin-deps.sh --quarantine-days 0           # skip (emergency)
 # Verify + build
 bash scripts/verify.sh                                 # static grep-based gate
 cd output/gstack && bun install --frozen-lockfile && bun run build  # build
+
+# Verify sanitize from a fix branch (no PR created, no branch push)
+gh workflow run sanitize.yml --ref fix/sanitize-foo -f verify_only=true
 ```
 
 ## Supply-Chain Quarantine (Two Layers)
@@ -93,15 +96,17 @@ Produces a PASS/FAIL report.
 
 **Phase 2a (PASS):** Approve and merge the PR.
 
-**Phase 2b (FAIL):** Fix `sanitize.sh` / `transforms.mjs` on main (already there —
-never left), commit, push, re-trigger the workflow, then loop back to Phase 1.
+**Phase 2b (FAIL):** Create a `fix/sanitize-<issue>` branch off main, fix the
+sanitize scripts, verify by running the workflow with `verify_only=true` from the
+fix branch, PR the fix to main through normal review, then re-trigger the
+sanitize workflow and loop back to Phase 1.
 
-### Why we never check out the sanitize branch
+### Branch discipline
 
-The `sanitize/latest` branch is force-pushed by the workflow. If we check it out
-locally and then push fixes to main + re-trigger, the local branch diverges from
-remote and requires `git reset --hard` to recover. By using `git fetch` +
-`git show origin/sanitize/latest:path` we avoid this entirely.
+- **`sanitize/latest`** is force-pushed by the workflow. Never check it out locally.
+  During Phase 1, use `git fetch` + `git show origin/sanitize/latest:path`.
+- **`fix/sanitize-*`** branches are for fixes. Work here, verify via `verify_only`
+  mode, then PR to main. Never push directly to main with admin overrides.
 
 ### What the review checks
 

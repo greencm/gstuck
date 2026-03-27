@@ -14,6 +14,11 @@ on:
         description: 'npm dependency quarantine window (days)'
         required: false
         default: '7'
+      verify_only:
+        description: 'Run sanitize + verify but skip branch push and PR (for fix branch testing)'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
   contents: write
@@ -44,14 +49,20 @@ jobs:
           SHA=$(bash scripts/sanitize.sh --resolve-sha /tmp/gstack-upstream --quarantine-days "$DAYS" 2>/dev/null | head -1)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-          # Check against what's on main (not the PR branch)
-          CURRENT_SHA=$(cat upstream.sha 2>/dev/null | tr -d '[:space:]' || echo "")
-          if [ "$SHA" = "$CURRENT_SHA" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "SHA unchanged ($SHA) — nothing to do"
-          else
+          # In verify_only mode, always run (we're testing updated scripts against the same SHA)
+          if [ "${{ inputs.verify_only }}" = "true" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "New SHA: $SHA (was: $CURRENT_SHA)"
+            echo "verify_only mode — forcing run with SHA $SHA"
+          else
+            # Check against what's on main (not the PR branch)
+            CURRENT_SHA=$(cat upstream.sha 2>/dev/null | tr -d '[:space:]' || echo "")
+            if [ "$SHA" = "$CURRENT_SHA" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "SHA unchanged ($SHA) — nothing to do"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "New SHA: $SHA (was: $CURRENT_SHA)"
+            fi
           fi
 
       - name: Skip if unchanged
@@ -97,8 +108,16 @@ jobs:
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
 
+      - name: Verify-only summary
+        if: steps.resolve.outputs.changed == 'true' && inputs.verify_only == true
+        run: |
+          echo "## ✅ Verify-only run PASSED" >> "$GITHUB_STEP_SUMMARY"
+          echo "Sanitize scripts on this branch produce a clean build." >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Upstream SHA:** ${{ steps.resolve.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** $(cat output/gstack/VERSION 2>/dev/null || echo unknown)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Push to sanitize branch (reuse if PR is open)
-        if: steps.resolve.outputs.changed == 'true'
+        if: steps.resolve.outputs.changed == 'true' && inputs.verify_only != true
         run: |
           git config user.name "gstuck-bot"
           git config user.email "gstuck-bot@users.noreply.github.com"
@@ -115,7 +134,7 @@ jobs:
           git push --force-with-lease origin "$SANITIZE_BRANCH"
 
       - name: Create or update Pull Request
-        if: steps.resolve.outputs.changed == 'true'
+        if: steps.resolve.outputs.changed == 'true' && inputs.verify_only != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
