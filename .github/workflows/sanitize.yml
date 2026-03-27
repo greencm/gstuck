@@ -49,14 +49,20 @@ jobs:
           SHA=$(bash scripts/sanitize.sh --resolve-sha /tmp/gstack-upstream --quarantine-days "$DAYS" 2>/dev/null | head -1)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-          # Check against what's on main (not the PR branch)
-          CURRENT_SHA=$(cat upstream.sha 2>/dev/null | tr -d '[:space:]' || echo "")
-          if [ "$SHA" = "$CURRENT_SHA" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "SHA unchanged ($SHA) — nothing to do"
-          else
+          # In verify_only mode, always run (we're testing updated scripts against the same SHA)
+          if [ "${{ inputs.verify_only }}" = "true" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "New SHA: $SHA (was: $CURRENT_SHA)"
+            echo "verify_only mode — forcing run with SHA $SHA"
+          else
+            # Check against what's on main (not the PR branch)
+            CURRENT_SHA=$(cat upstream.sha 2>/dev/null | tr -d '[:space:]' || echo "")
+            if [ "$SHA" = "$CURRENT_SHA" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "SHA unchanged ($SHA) — nothing to do"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "New SHA: $SHA (was: $CURRENT_SHA)"
+            fi
           fi
 
       - name: Skip if unchanged
