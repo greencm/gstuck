@@ -78,16 +78,16 @@ Continue with the current skill.
 ```bash
 if [ -d "$HOME/.claude/skills/gstuck/output/gstack/.git" ]; then
   INSTALL_TYPE="global-git"
-  INSTALL_DIR="$HOME/.claude/skills/gstack"
+  INSTALL_DIR="$HOME/.claude/skills/gstuck/output/gstack"
 elif [ -d ".claude/skills/gstuck/output/gstack/.git" ]; then
   INSTALL_TYPE="local-git"
-  INSTALL_DIR=".claude/skills/gstack"
-elif [ -d ".claude/skills/gstack" ]; then
+  INSTALL_DIR=".claude/skills/gstuck/output/gstack"
+elif [ -d ".claude/skills/gstuck/output/gstack" ]; then
   INSTALL_TYPE="vendored"
-  INSTALL_DIR=".claude/skills/gstack"
-elif [ -d "$HOME/.claude/skills/gstack" ]; then
+  INSTALL_DIR=".claude/skills/gstuck/output/gstack"
+elif [ -d "$HOME/.claude/skills/gstuck/output/gstack" ]; then
   INSTALL_TYPE="vendored-global"
-  INSTALL_DIR="$HOME/.claude/skills/gstack"
+  INSTALL_DIR="$HOME/.claude/skills/gstuck/output/gstack"
 else
   echo "ERROR: gstack not found"
   exit 1
@@ -137,11 +137,11 @@ Use the install directory from Step 2. Check if there's also a local vendored co
 ```bash
 _ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 LOCAL_GSTACK=""
-if [ -n "$_ROOT" ] && [ -d "$_ROOT/.claude/skills/gstack" ]; then
-  _RESOLVED_LOCAL=$(cd "$_ROOT/.claude/skills/gstack" && pwd -P)
+if [ -n "$_ROOT" ] && [ -d "$_ROOT/.claude/skills/gstuck/output/gstack" ]; then
+  _RESOLVED_LOCAL=$(cd "$_ROOT/.claude/skills/gstuck/output/gstack" && pwd -P)
   _RESOLVED_PRIMARY=$(cd "$INSTALL_DIR" && pwd -P)
   if [ "$_RESOLVED_LOCAL" != "$_RESOLVED_PRIMARY" ]; then
-    LOCAL_GSTACK="$_ROOT/.claude/skills/gstack"
+    LOCAL_GSTACK="$_ROOT/.claude/skills/gstuck/output/gstack"
   fi
 fi
 echo "LOCAL_GSTACK=$LOCAL_GSTACK"

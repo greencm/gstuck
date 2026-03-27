@@ -44,7 +44,7 @@ if (evalsEnabled && !process.env.EVALS_ALL) {
 
 // --- Helper functions ---
 
-/** Copy all SKILL.md files into tmpDir/.claude/skills/gstack/ for auto-discovery */
+/** Copy all SKILL.md files into tmpDir/.claude/skills/gstuck/output/gstack/ for auto-discovery */
 function installSkills(tmpDir: string) {
   const skillDirs = [
     '', // root gstack SKILL.md
