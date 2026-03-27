@@ -92,9 +92,11 @@ if (existsSync(GEN_SCRIPT)) {
     "function generateTelemetryPrompt(ctx: TemplateContext): string {\n  return ''; // [gstuck] Telemetry prompt disabled\n}"
   );
 
-  // Remove telemetry epilogue section
+  // Remove telemetry epilogue section — strip from "## Telemetry (run last)"
+  // to the closing backtick+semicolon of the template literal it lives in.
+  // This handles any upstream restructuring of what follows the epilogue.
   src = src.replace(
-    /## Telemetry \(run last\)[\s\S]*?(?=## Plan Status Footer)/,
+    /## Telemetry \(run last\)[\s\S]*?(?=`;\s*\n\})/g,
     ''
   );
 

@@ -44,6 +44,15 @@ if [ -f "gstack-upgrade/SKILL.md.tmpl" ]; then
   fi
 fi
 
+# ─── No telemetry epilogue in generated SKILL.md files ────────
+TEL_EPILOGUE=$(grep -rn 'Telemetry (run last)' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ || true)
+if [ -n "$TEL_EPILOGUE" ]; then
+  echo "FAIL: telemetry epilogue found in generated skills:"
+  echo "$TEL_EPILOGUE" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── No JSONL writes in generated SKILL.md files ──────────────
 # Exclude CHANGELOG.md — it documents upstream history (not active code)
 JSONL_MATCHES=$(grep -r 'skill-usage\.jsonl' --include='*.md' . 2>/dev/null \

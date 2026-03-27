@@ -147,8 +147,8 @@ echo "Removing supabase/..."
 rm -rf supabase/
 
 # ─── Step 2b: Delete analytics infrastructure ────────────────────
-echo "Removing analytics CLI and tests..."
-rm -f scripts/analytics.ts test/analytics.test.ts
+echo "Removing analytics/telemetry CLI and tests..."
+rm -f scripts/analytics.ts test/analytics.test.ts test/telemetry.test.ts
 
 # ─── Step 2c: Delete .agents/ directory (Agent SDK layout not used) ──
 if [ -d ".agents" ]; then

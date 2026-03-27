@@ -73,4 +73,34 @@ if (fixed > 0) {
   console.log('  No surviving skills/gstack/ paths found');
 }
 
+// ─── Strip telemetry epilogue from generated SKILL.md files ─────────
+// The build may regenerate "## Telemetry (run last)" sections even after
+// transforms.mjs patches gen-skill-docs.ts. Strip them from final output.
+let telFixed = 0;
+for (const f of findFiles(ROOT, ['.md'])) {
+  let src = readFileSync(f, 'utf-8');
+  if (src.includes('## Telemetry (run last)')) {
+    // Strip from "## Telemetry (run last)" to end of file or next ## heading
+    src = src.replace(/## Telemetry \(run last\)[\s\S]*?(?=\n## (?!Telemetry)|$)/g, '');
+    // Clean up trailing whitespace
+    src = src.trimEnd() + '\n';
+    writeFileSync(f, src);
+    telFixed++;
+  }
+}
+if (telFixed > 0) {
+  console.log(`  Stripped telemetry epilogue from ${telFixed} SKILL.md file(s)`);
+}
+
+// ─── Strip telemetry/Supabase content from docs ─────────────────────
+for (const f of findFiles(ROOT, ['.md'])) {
+  let src = readFileSync(f, 'utf-8');
+  if (src.includes('## Privacy & Telemetry')) {
+    src = src.replace(/## Privacy & Telemetry[\s\S]*?(?=\n## |$)/g, '');
+    src = src.trimEnd() + '\n';
+    writeFileSync(f, src);
+    console.log(`  Stripped Privacy & Telemetry section from ${f}`);
+  }
+}
+
 console.log('Post-build fixup complete.');
