@@ -150,6 +150,12 @@ rm -rf supabase/
 echo "Removing analytics CLI and tests..."
 rm -f scripts/analytics.ts test/analytics.test.ts
 
+# ─── Step 2c: Delete .agents/ directory (Agent SDK layout not used) ──
+if [ -d ".agents" ]; then
+  echo "Removing .agents/..."
+  rm -rf .agents/
+fi
+
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard; do
   if [ -f "$script" ]; then

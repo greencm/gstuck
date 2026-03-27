@@ -200,11 +200,14 @@ for (const f of findFiles(ROOT, ['SKILL.md'], ['node_modules', '.git'])) {
 console.log('  Cleaned telemetry from pre-generated SKILL.md preambles');
 
 // ─── Step 15: Rewrite skill paths for gstuck layout ──────────
+// Match skills/gstack followed by / or end-of-string-literal (' or ")
+// This catches both path references (skills/gstack/bin/...) and config
+// values ('skills/gstack') that upstream uses in HOST_PATHS objects.
 
 for (const f of findFiles(ROOT, ['.md', '.tmpl', '.ts'], ['node_modules', '.git', 'test'])) {
   let src = readFile(f);
-  if (src.includes('skills/gstack/')) {
-    src = src.replaceAll('skills/gstack/', 'skills/gstuck/output/gstack/');
+  if (src.includes('skills/gstack')) {
+    src = src.replace(/skills\/gstack(?=[/'"])/g, 'skills/gstuck/output/gstack');
     writeFile(f, src);
   }
 }
