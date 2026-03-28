@@ -55,6 +55,7 @@ const HOST_PATHS: Record<Host, HostPaths> = {
 interface TemplateContext {
   skillName: string;
   tmplPath: string;
+  benefitsFrom?: string[];
   host: Host;
   paths: HostPaths;
 }
@@ -1012,7 +1013,7 @@ Parse the output. Find the most recent entry for each skill (plan-ceo-review, pl
 - **Eng Review (required by default):** The only review that gates shipping. Covers architecture, code quality, tests, performance. Can be disabled globally with \\\`gstack-config set skip_eng_review true\\\` (the "don't bother me" setting).
 - **CEO Review (optional):** Use your judgment. Recommend it for big product/business changes, new user-facing features, or scope decisions. Skip for bug fixes, refactors, infra, and cleanup.
 - **Design Review (optional):** Use your judgment. Recommend it for UI/UX changes. Skip for backend-only, infra, or prompt-only changes.
-- **Codex Review (optional):** Independent second opinion from OpenAI Codex CLI. Shows pass/fail gate. Recommend for critical code changes where a second AI perspective adds value. Skip when Codex CLI is not installed.
+- **Codex Review (enabled by default when Codex CLI is installed):** Independent review + adversarial challenge from OpenAI Codex CLI. Shows pass/fail gate. Runs automatically when enabled — configure with \\\`gstack-config set codex_reviews enabled|disabled\\\`.
 
 **Verdict logic:**
 - **CLEARED**: Eng Review has >= 1 entry within 7 days with status "clean" (or \\\`skip_eng_review\\\` is \\\`true\\\`)
@@ -1182,6 +1183,288 @@ Only commit if there are changes. Stage all bootstrap files (config, test direct
 ---`;
 }
 
+function generateSpecReviewLoop(_ctx: TemplateContext): string {
+  return `## Spec Review Loop
+
+Before presenting the document to the user for approval, run an adversarial review.
+
+**Step 1: Dispatch reviewer subagent**
+
+Use the Agent tool to dispatch an independent reviewer. The reviewer has fresh context
+and cannot see the brainstorming conversation — only the document. This ensures genuine
+adversarial independence.
+
+Prompt the subagent with:
+- The file path of the document just written
+- "Read this document and review it on 5 dimensions. For each dimension, note PASS or
+  list specific issues with suggested fixes. At the end, output a quality score (1-10)
+  across all dimensions."
+
+**Dimensions:**
+1. **Completeness** — Are all requirements addressed? Missing edge cases?
+2. **Consistency** — Do parts of the document agree with each other? Contradictions?
+3. **Clarity** — Could an engineer implement this without asking questions? Ambiguous language?
+4. **Scope** — Does the document creep beyond the original problem? YAGNI violations?
+5. **Feasibility** — Can this actually be built with the stated approach? Hidden complexity?
+
+The subagent should return:
+- A quality score (1-10)
+- PASS if no issues, or a numbered list of issues with dimension, description, and fix
+
+**Step 2: Fix and re-dispatch**
+
+If the reviewer returns issues:
+1. Fix each issue in the document on disk (use Edit tool)
+2. Re-dispatch the reviewer subagent with the updated document
+3. Maximum 3 iterations total
+
+**Convergence guard:** If the reviewer returns the same issues on consecutive iterations
+(the fix didn't resolve them or the reviewer disagrees with the fix), stop the loop
+and persist those issues as "Reviewer Concerns" in the document rather than looping
+further.
+
+If the subagent fails, times out, or is unavailable — skip the review loop entirely.
+Tell the user: "Spec review unavailable — presenting unreviewed doc." The document is
+already written to disk; the review is a quality bonus, not a gate.
+
+**Step 3: Report and persist metrics**
+
+After the loop completes (PASS, max iterations, or convergence guard):
+
+1. Tell the user the result — summary by default:
+   "Your doc survived N rounds of adversarial review. M issues caught and fixed.
+   Quality score: X/10."
+   If they ask "what did the reviewer find?", show the full reviewer output.
+
+2. If issues remain after max iterations or convergence, add a "## Reviewer Concerns"
+   section to the document listing each unresolved issue. Downstream skills will see this.
+
+3. Append metrics:
+\`\`\`bash
+
+\`\`\`
+Replace ITERATIONS, FOUND, FIXED, REMAINING, SCORE with actual values from the review.`;
+}
+
+function generateBenefitsFrom(ctx: TemplateContext): string {
+  if (!ctx.benefitsFrom || ctx.benefitsFrom.length === 0) return '';
+
+  const skillList = ctx.benefitsFrom.map(s => `\`/${s}\``).join(' or ');
+  const first = ctx.benefitsFrom[0];
+
+  return `## Prerequisite Skill Offer
+
+When the design doc check above prints "No design doc found," offer the prerequisite
+skill before proceeding.
+
+Say to the user via AskUserQuestion:
+
+> "No design doc found for this branch. ${skillList} produces a structured problem
+> statement, premise challenge, and explored alternatives — it gives this review much
+> sharper input to work with. Takes about 10 minutes. The design doc is per-feature,
+> not per-product — it captures the thinking behind this specific change."
+
+Options:
+- A) Run /${first} first (in another window, then come back)
+- B) Skip — proceed with standard review
+
+If they skip: "No worries — standard review. If you ever want sharper input, try
+/${first} first next time." Then proceed normally. Do not re-offer later in the session.`;
+}
+
+function generateDesignSketch(_ctx: TemplateContext): string {
+  return `## Visual Sketch (UI ideas only)
+
+If the chosen approach involves user-facing UI (screens, pages, forms, dashboards,
+or interactive elements), generate a rough wireframe to help the user visualize it.
+If the idea is backend-only, infrastructure, or has no UI component — skip this
+section silently.
+
+**Step 1: Gather design context**
+
+1. Check if \`DESIGN.md\` exists in the repo root. If it does, read it for design
+   system constraints (colors, typography, spacing, component patterns). Use these
+   constraints in the wireframe.
+2. Apply core design principles:
+   - **Information hierarchy** — what does the user see first, second, third?
+   - **Interaction states** — loading, empty, error, success, partial
+   - **Edge case paranoia** — what if the name is 47 chars? Zero results? Network fails?
+   - **Subtraction default** — "as little design as possible" (Rams). Every element earns its pixels.
+   - **Design for trust** — every interface element builds or erodes user trust.
+
+**Step 2: Generate wireframe HTML**
+
+Generate a single-page HTML file with these constraints:
+- **Intentionally rough aesthetic** — use system fonts, thin gray borders, no color,
+  hand-drawn-style elements. This is a sketch, not a polished mockup.
+- Self-contained — no external dependencies, no CDN links, inline CSS only
+- Show the core interaction flow (1-3 screens/states max)
+- Include realistic placeholder content (not "Lorem ipsum" — use content that
+  matches the actual use case)
+- Add HTML comments explaining design decisions
+
+Write to a temp file:
+\`\`\`bash
+SKETCH_FILE="/tmp/gstack-sketch-$(date +%s).html"
+\`\`\`
+
+**Step 3: Render and capture**
+
+\`\`\`bash
+$B goto "file://$SKETCH_FILE"
+$B screenshot /tmp/gstack-sketch.png
+\`\`\`
+
+If \`$B\` is not available (browse binary not set up), skip the render step. Tell the
+user: "Visual sketch requires the browse binary. Run the setup script to enable it."
+
+**Step 4: Present and iterate**
+
+Show the screenshot to the user. Ask: "Does this feel right? Want to iterate on the layout?"
+
+If they want changes, regenerate the HTML with their feedback and re-render.
+If they approve or say "good enough," proceed.
+
+**Step 5: Include in design doc**
+
+Reference the wireframe screenshot in the design doc's "Recommended Approach" section.
+The screenshot file at \`/tmp/gstack-sketch.png\` can be referenced by downstream skills
+(\`/plan-design-review\`, \`/design-review\`) to see what was originally envisioned.`;
+}
+
+function generateCodexReviewStep(ctx: TemplateContext): string {
+  // Codex host: strip entirely — Codex should never invoke itself
+  if (ctx.host === 'codex') return '';
+
+  const isShip = ctx.skillName === 'ship';
+  const stepNum = isShip ? '3.8' : '5.7';
+
+  return `## Step ${stepNum}: Codex review
+
+Check if the Codex CLI is available and read the user's Codex review preference:
+
+\`\`\`bash
+which codex 2>/dev/null && echo "CODEX_AVAILABLE" || echo "CODEX_NOT_AVAILABLE"
+CODEX_REVIEWS_CFG=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get codex_reviews 2>/dev/null || true)
+echo "CODEX_REVIEWS: \${CODEX_REVIEWS_CFG:-not_set}"
+\`\`\`
+
+If \`CODEX_NOT_AVAILABLE\`: skip this step silently. Continue to the next step.
+
+If \`CODEX_REVIEWS\` is \`disabled\`: skip this step silently. Continue to the next step.
+
+If \`CODEX_REVIEWS\` is \`enabled\`: run both code review and adversarial challenge automatically (no prompt). Jump to the "Run Codex" section below.
+
+If \`CODEX_REVIEWS\` is \`not_set\`: use AskUserQuestion to offer the one-time adoption prompt:
+
+\`\`\`
+GStack recommends enabling Codex code reviews — Codex is the super smart quiet engineer friend who will save your butt.
+
+A) Enable for all future runs (recommended, default)
+B) Try it for now, ask me again later
+C) No thanks, don't ask me again
+\`\`\`
+
+If the user chooses A: persist the setting and run both:
+\`\`\`bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set codex_reviews enabled
+\`\`\`
+
+If the user chooses B: run both this time but do not persist any setting.
+
+If the user chooses C: persist the opt-out and skip:
+\`\`\`bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set codex_reviews disabled
+\`\`\`
+Then skip this step. Continue to the next step.
+
+### Run Codex
+
+Always run **both** code review and adversarial challenge. Use a 5-minute timeout (\`timeout: 300000\`) on each Bash call.
+
+First, create a temp file for stderr capture:
+\`\`\`bash
+TMPERR=$(mktemp /tmp/codex-review-XXXXXXXX)
+\`\`\`
+
+**Code review:** Run:
+\`\`\`bash
+codex review --base <base> -c 'model_reasoning_effort="xhigh"' --enable web_search_cached 2>"$TMPERR"
+\`\`\`
+
+After the command completes, read stderr for cost/error info:
+\`\`\`bash
+cat "$TMPERR"
+\`\`\`
+
+Present the full output verbatim under a \`CODEX SAYS (code review):\` header:
+
+\`\`\`
+CODEX SAYS (code review):
+════════════════════════════════════════════════════════════
+<full codex output, verbatim — do not truncate or summarize>
+════════════════════════════════════════════════════════════
+GATE: PASS                    Tokens: N | Est. cost: ~$X.XX
+\`\`\`
+
+Check the output for \`[P1]\` markers. If found: \`GATE: FAIL\`. If no \`[P1]\`: \`GATE: PASS\`.
+
+**If GATE is FAIL:** use AskUserQuestion:
+
+\`\`\`
+Codex found N critical issues in the diff.
+
+A) Investigate and fix now (recommended)
+B) Ship anyway — these issues may cause production problems
+\`\`\`
+
+If the user chooses A: read the Codex findings carefully and work to address them${isShip ? '. After fixing, re-run tests (Step 3) since code has changed' : ''}. Then re-run \`codex review\` to verify the gate is now PASS.
+
+If the user chooses B: continue to the next step.
+
+### Error handling (code review)
+
+Before persisting the gate result, check for errors. All errors are non-blocking — Codex is a quality enhancement, not a prerequisite. Check \`$TMPERR\` output (already read above) for error indicators:
+
+- **Auth failure:** If stderr contains "auth", "login", "unauthorized", or "API key", tell the user: "Codex authentication failed. Run \\\`codex login\\\` in your terminal to authenticate via ChatGPT." Do NOT persist a review log entry. Continue to the adversarial step (it will likely fail too, but try anyway).
+- **Timeout:** If the Bash call times out (5 min), tell the user: "Codex timed out after 5 minutes. The diff may be too large or the API may be slow." Do NOT persist a review log entry. Skip to cleanup.
+- **Empty response:** If codex returned no stdout output, tell the user: "Codex returned no response. Stderr: <paste relevant error>." Do NOT persist a review log entry. Skip to cleanup.
+
+**Only if codex produced a real review (non-empty stdout):** Persist the code review result:
+\`\`\`bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","gate":"GATE","commit":"'"$(git rev-parse --short HEAD)"'"}'
+\`\`\`
+
+Substitute: STATUS ("clean" if PASS, "issues_found" if FAIL), GATE ("pass" or "fail").
+
+**Adversarial challenge:** Run:
+\`\`\`bash
+TMPERR_ADV=$(mktemp /tmp/codex-adv-XXXXXXXX)
+codex exec "Review the changes on this branch against the base branch. Run git diff origin/<base> to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption paths. Be adversarial. Be thorough. No compliments — just the problems." -s read-only -c 'model_reasoning_effort="xhigh"' --enable web_search_cached 2>"$TMPERR_ADV"
+\`\`\`
+
+After the command completes, read adversarial stderr:
+\`\`\`bash
+cat "$TMPERR_ADV"
+\`\`\`
+
+Present the full output verbatim under a \`CODEX SAYS (adversarial challenge):\` header. This is informational — it never blocks shipping. If the adversarial command timed out or returned no output, note this to the user and continue.
+${!isShip ? `
+**Cross-model analysis:** After both Codex outputs are presented, compare Codex's findings with your own review findings from the earlier review steps and output:
+
+\`\`\`
+CROSS-MODEL ANALYSIS:
+  Both found: [findings that overlap between Claude and Codex]
+  Only Codex found: [findings unique to Codex]
+  Only Claude found: [findings unique to Claude's review]
+  Agreement rate: X% (N/M total unique findings overlap)
+\`\`\`
+` : ''}
+**Cleanup:** Run \`rm -f "$TMPERR" "$TMPERR_ADV"\` after processing.
+
+---`;
+}
+
 const RESOLVERS: Record<string, (ctx: TemplateContext) => string> = {
   COMMAND_REFERENCE: generateCommandReference,
   SNAPSHOT_FLAGS: generateSnapshotFlags,
@@ -1193,6 +1476,10 @@ const RESOLVERS: Record<string, (ctx: TemplateContext) => string> = {
   DESIGN_REVIEW_LITE: generateDesignReviewLite,
   REVIEW_DASHBOARD: generateReviewDashboard,
   TEST_BOOTSTRAP: generateTestBootstrap,
+  SPEC_REVIEW_LOOP: generateSpecReviewLoop,
+  DESIGN_SKETCH: generateDesignSketch,
+  BENEFITS_FROM: generateBenefitsFrom,
+  CODEX_REVIEW_STEP: generateCodexReviewStep,
 };
 
 // ─── Codex Helpers ───────────────────────────────────────────
@@ -1315,7 +1602,14 @@ function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath:
   // Extract skill name from frontmatter for TemplateContext
   const nameMatch = tmplContent.match(/^name:\s*(.+)$/m);
   const skillName = nameMatch ? nameMatch[1].trim() : path.basename(path.dirname(tmplPath));
-  const ctx: TemplateContext = { skillName, tmplPath, host, paths: HOST_PATHS[host] };
+
+  // Extract benefits-from list from frontmatter (inline YAML: benefits-from: [a, b])
+  const benefitsMatch = tmplContent.match(/^benefits-from:\s*\[([^\]]*)\]/m);
+  const benefitsFrom = benefitsMatch
+    ? benefitsMatch[1].split(',').map(s => s.trim()).filter(Boolean)
+    : undefined;
+
+  const ctx: TemplateContext = { skillName, tmplPath, benefitsFrom, host, paths: HOST_PATHS[host] };
 
   // Replace placeholders
   let content = tmplContent.replace(/\{\{(\w+)\}\}/g, (match, name) => {

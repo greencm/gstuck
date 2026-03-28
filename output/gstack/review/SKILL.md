@@ -404,52 +404,128 @@ If no documentation files exist, skip this step silently.
 
 ---
 
-## Step 5.7: Codex second opinion (optional)
+## Step 5.7: Codex review
 
-After completing the review, check if the Codex CLI is available:
+Check if the Codex CLI is available and read the user's Codex review preference:
 
 ```bash
 which codex 2>/dev/null && echo "CODEX_AVAILABLE" || echo "CODEX_NOT_AVAILABLE"
+CODEX_REVIEWS_CFG=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get codex_reviews 2>/dev/null || true)
+echo "CODEX_REVIEWS: ${CODEX_REVIEWS_CFG:-not_set}"
 ```
 
-If Codex is available, use AskUserQuestion:
+If `CODEX_NOT_AVAILABLE`: skip this step silently. Continue to the next step.
+
+If `CODEX_REVIEWS` is `disabled`: skip this step silently. Continue to the next step.
+
+If `CODEX_REVIEWS` is `enabled`: run both code review and adversarial challenge automatically (no prompt). Jump to the "Run Codex" section below.
+
+If `CODEX_REVIEWS` is `not_set`: use AskUserQuestion to offer the one-time adoption prompt:
 
 ```
-Review complete. Want an independent second opinion from Codex (OpenAI)?
+GStack recommends enabling Codex code reviews — Codex is the super smart quiet engineer friend who will save your butt.
 
-A) Run Codex code review — independent diff review with pass/fail gate
-B) Run Codex adversarial challenge — try to find ways this code will fail in production
-C) Both — review first, then adversarial challenge
-D) Skip — no Codex review needed
+A) Enable for all future runs (recommended, default)
+B) Try it for now, ask me again later
+C) No thanks, don't ask me again
 ```
 
-If the user chooses A, B, or C:
-
-**For code review (A or C):** Run `codex review --base <base>` with a 5-minute timeout.
-Present the full output verbatim under a `CODEX SAYS (code review):` header.
-Check the output for `[P1]` markers — if found, note `GATE: FAIL`, otherwise `GATE: PASS`.
-After presenting, compare Codex's findings with your own review findings from Steps 4-5
-and output a CROSS-MODEL ANALYSIS showing what both found, what only Codex found,
-and what only Claude found.
-
-**For adversarial challenge (B or C):** Run:
+If the user chooses A: persist the setting and run both:
 ```bash
-codex exec "Review the changes on this branch against the base branch. Run git diff origin/<base> to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, failure modes. Be adversarial." -s read-only
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set codex_reviews enabled
 ```
-Present the full output verbatim under a `CODEX SAYS (adversarial challenge):` header.
 
-**Only if a code review ran (user chose A or C):** Persist the Codex review result to the review log:
+If the user chooses B: run both this time but do not persist any setting.
+
+If the user chooses C: persist the opt-out and skip:
 ```bash
-~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","gate":"GATE"}'
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set codex_reviews disabled
+```
+Then skip this step. Continue to the next step.
+
+### Run Codex
+
+Always run **both** code review and adversarial challenge. Use a 5-minute timeout (`timeout: 300000`) on each Bash call.
+
+First, create a temp file for stderr capture:
+```bash
+TMPERR=$(mktemp /tmp/codex-review-XXXXXXXX)
+```
+
+**Code review:** Run:
+```bash
+codex review --base <base> -c 'model_reasoning_effort="xhigh"' --enable web_search_cached 2>"$TMPERR"
+```
+
+After the command completes, read stderr for cost/error info:
+```bash
+cat "$TMPERR"
+```
+
+Present the full output verbatim under a `CODEX SAYS (code review):` header:
+
+```
+CODEX SAYS (code review):
+════════════════════════════════════════════════════════════
+<full codex output, verbatim — do not truncate or summarize>
+════════════════════════════════════════════════════════════
+GATE: PASS                    Tokens: N | Est. cost: ~$X.XX
+```
+
+Check the output for `[P1]` markers. If found: `GATE: FAIL`. If no `[P1]`: `GATE: PASS`.
+
+**If GATE is FAIL:** use AskUserQuestion:
+
+```
+Codex found N critical issues in the diff.
+
+A) Investigate and fix now (recommended)
+B) Ship anyway — these issues may cause production problems
+```
+
+If the user chooses A: read the Codex findings carefully and work to address them. Then re-run `codex review` to verify the gate is now PASS.
+
+If the user chooses B: continue to the next step.
+
+### Error handling (code review)
+
+Before persisting the gate result, check for errors. All errors are non-blocking — Codex is a quality enhancement, not a prerequisite. Check `$TMPERR` output (already read above) for error indicators:
+
+- **Auth failure:** If stderr contains "auth", "login", "unauthorized", or "API key", tell the user: "Codex authentication failed. Run \`codex login\` in your terminal to authenticate via ChatGPT." Do NOT persist a review log entry. Continue to the adversarial step (it will likely fail too, but try anyway).
+- **Timeout:** If the Bash call times out (5 min), tell the user: "Codex timed out after 5 minutes. The diff may be too large or the API may be slow." Do NOT persist a review log entry. Skip to cleanup.
+- **Empty response:** If codex returned no stdout output, tell the user: "Codex returned no response. Stderr: <paste relevant error>." Do NOT persist a review log entry. Skip to cleanup.
+
+**Only if codex produced a real review (non-empty stdout):** Persist the code review result:
+```bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","gate":"GATE","commit":"'"$(git rev-parse --short HEAD)"'"}'
 ```
 
 Substitute: STATUS ("clean" if PASS, "issues_found" if FAIL), GATE ("pass" or "fail").
 
-**Do NOT persist a codex-review entry when only the adversarial challenge (B) ran** —
-there is no gate verdict to record, and a false entry would make the Review Readiness
-Dashboard believe a code review happened when it didn't.
+**Adversarial challenge:** Run:
+```bash
+TMPERR_ADV=$(mktemp /tmp/codex-adv-XXXXXXXX)
+codex exec "Review the changes on this branch against the base branch. Run git diff origin/<base> to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption paths. Be adversarial. Be thorough. No compliments — just the problems." -s read-only -c 'model_reasoning_effort="xhigh"' --enable web_search_cached 2>"$TMPERR_ADV"
+```
 
-If Codex is not available, skip this step silently.
+After the command completes, read adversarial stderr:
+```bash
+cat "$TMPERR_ADV"
+```
+
+Present the full output verbatim under a `CODEX SAYS (adversarial challenge):` header. This is informational — it never blocks shipping. If the adversarial command timed out or returned no output, note this to the user and continue.
+
+**Cross-model analysis:** After both Codex outputs are presented, compare Codex's findings with your own review findings from the earlier review steps and output:
+
+```
+CROSS-MODEL ANALYSIS:
+  Both found: [findings that overlap between Claude and Codex]
+  Only Codex found: [findings unique to Codex]
+  Only Claude found: [findings unique to Claude's review]
+  Agreement rate: X% (N/M total unique findings overlap)
+```
+
+**Cleanup:** Run `rm -f "$TMPERR" "$TMPERR_ADV"` after processing.
 
 ---
 
