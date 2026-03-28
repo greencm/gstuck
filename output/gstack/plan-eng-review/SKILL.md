@@ -8,6 +8,7 @@ description: |
   "review the architecture", "engineering review", or "lock in the plan".
   Proactively suggest when the user has a plan or design doc and is about to
   start coding — to catch architecture issues before implementation.
+benefits-from: [office-hours]
 allowed-tools:
   - Read
   - Write
@@ -197,6 +198,25 @@ DESIGN=$(ls -t ~/.gstack/projects/$SLUG/*-$BRANCH-design-*.md 2>/dev/null | head
 [ -n "$DESIGN" ] && echo "Design doc found: $DESIGN" || echo "No design doc found"
 ```
 If a design doc exists, read it. Use it as the source of truth for the problem statement, constraints, and chosen approach. If it has a `Supersedes:` field, note that this is a revised design — check the prior version for context on what changed and why.
+
+## Prerequisite Skill Offer
+
+When the design doc check above prints "No design doc found," offer the prerequisite
+skill before proceeding.
+
+Say to the user via AskUserQuestion:
+
+> "No design doc found for this branch. `/office-hours` produces a structured problem
+> statement, premise challenge, and explored alternatives — it gives this review much
+> sharper input to work with. Takes about 10 minutes. The design doc is per-feature,
+> not per-product — it captures the thinking behind this specific change."
+
+Options:
+- A) Run /office-hours first (in another window, then come back)
+- B) Skip — proceed with standard review
+
+If they skip: "No worries — standard review. If you ever want sharper input, try
+/office-hours first next time." Then proceed normally. Do not re-offer later in the session.
 
 ### Step 0: Scope Challenge
 Before reviewing anything, answer these questions:
@@ -427,7 +447,7 @@ Parse the output. Find the most recent entry for each skill (plan-ceo-review, pl
 - **Eng Review (required by default):** The only review that gates shipping. Covers architecture, code quality, tests, performance. Can be disabled globally with \`gstack-config set skip_eng_review true\` (the "don't bother me" setting).
 - **CEO Review (optional):** Use your judgment. Recommend it for big product/business changes, new user-facing features, or scope decisions. Skip for bug fixes, refactors, infra, and cleanup.
 - **Design Review (optional):** Use your judgment. Recommend it for UI/UX changes. Skip for backend-only, infra, or prompt-only changes.
-- **Codex Review (optional):** Independent second opinion from OpenAI Codex CLI. Shows pass/fail gate. Recommend for critical code changes where a second AI perspective adds value. Skip when Codex CLI is not installed.
+- **Codex Review (enabled by default when Codex CLI is installed):** Independent review + adversarial challenge from OpenAI Codex CLI. Shows pass/fail gate. Runs automatically when enabled — configure with \`gstack-config set codex_reviews enabled|disabled\`.
 
 **Verdict logic:**
 - **CLEARED**: Eng Review has >= 1 entry within 7 days with status "clean" (or \`skip_eng_review\` is \`true\`)

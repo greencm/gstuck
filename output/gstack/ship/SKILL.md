@@ -226,7 +226,7 @@ Parse the output. Find the most recent entry for each skill (plan-ceo-review, pl
 - **Eng Review (required by default):** The only review that gates shipping. Covers architecture, code quality, tests, performance. Can be disabled globally with \`gstack-config set skip_eng_review true\` (the "don't bother me" setting).
 - **CEO Review (optional):** Use your judgment. Recommend it for big product/business changes, new user-facing features, or scope decisions. Skip for bug fixes, refactors, infra, and cleanup.
 - **Design Review (optional):** Use your judgment. Recommend it for UI/UX changes. Skip for backend-only, infra, or prompt-only changes.
-- **Codex Review (optional):** Independent second opinion from OpenAI Codex CLI. Shows pass/fail gate. Recommend for critical code changes where a second AI perspective adds value. Skip when Codex CLI is not installed.
+- **Codex Review (enabled by default when Codex CLI is installed):** Independent review + adversarial challenge from OpenAI Codex CLI. Shows pass/fail gate. Runs automatically when enabled — configure with \`gstack-config set codex_reviews enabled|disabled\`.
 
 **Verdict logic:**
 - **CLEARED**: Eng Review has >= 1 entry within 7 days with status "clean" (or \`skip_eng_review\` is \`true\`)
@@ -768,41 +768,118 @@ For each classified comment:
 
 ---
 
-## Step 3.8: Codex second opinion (optional)
+## Step 3.8: Codex review
 
-Check if the Codex CLI is available:
+Check if the Codex CLI is available and read the user's Codex review preference:
 
 ```bash
 which codex 2>/dev/null && echo "CODEX_AVAILABLE" || echo "CODEX_NOT_AVAILABLE"
+CODEX_REVIEWS_CFG=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get codex_reviews 2>/dev/null || true)
+echo "CODEX_REVIEWS: ${CODEX_REVIEWS_CFG:-not_set}"
 ```
 
-If Codex is available, use AskUserQuestion:
+If `CODEX_NOT_AVAILABLE`: skip this step silently. Continue to the next step.
+
+If `CODEX_REVIEWS` is `disabled`: skip this step silently. Continue to the next step.
+
+If `CODEX_REVIEWS` is `enabled`: run both code review and adversarial challenge automatically (no prompt). Jump to the "Run Codex" section below.
+
+If `CODEX_REVIEWS` is `not_set`: use AskUserQuestion to offer the one-time adoption prompt:
 
 ```
-Pre-landing review complete. Want an independent Codex (OpenAI) review before shipping?
+GStack recommends enabling Codex code reviews — Codex is the super smart quiet engineer friend who will save your butt.
 
-A) Run Codex code review — independent diff review with pass/fail gate
-B) Run Codex adversarial challenge — try to break this code
-C) Skip — ship without Codex review
+A) Enable for all future runs (recommended, default)
+B) Try it for now, ask me again later
+C) No thanks, don't ask me again
 ```
 
-If the user chooses A or B:
-
-**For code review (A):** Run `codex review --base <base>` with a 5-minute timeout.
-Present the full output verbatim under a `CODEX SAYS:` header. Check for `[P1]` markers
-to determine pass/fail gate. Persist the result:
-
+If the user chooses A: persist the setting and run both:
 ```bash
-~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE"}'
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set codex_reviews enabled
 ```
 
-If GATE is FAIL, use AskUserQuestion: "Codex found critical issues. Ship anyway?"
-If the user says no, stop. If yes, continue to Step 4.
+If the user chooses B: run both this time but do not persist any setting.
 
-**For adversarial (B):** Run codex exec with the adversarial prompt (see /codex skill).
-Present findings. This is informational — does not block shipping.
+If the user chooses C: persist the opt-out and skip:
+```bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-config set codex_reviews disabled
+```
+Then skip this step. Continue to the next step.
 
-If Codex is not available, skip silently. Continue to Step 4.
+### Run Codex
+
+Always run **both** code review and adversarial challenge. Use a 5-minute timeout (`timeout: 300000`) on each Bash call.
+
+First, create a temp file for stderr capture:
+```bash
+TMPERR=$(mktemp /tmp/codex-review-XXXXXXXX)
+```
+
+**Code review:** Run:
+```bash
+codex review --base <base> -c 'model_reasoning_effort="xhigh"' --enable web_search_cached 2>"$TMPERR"
+```
+
+After the command completes, read stderr for cost/error info:
+```bash
+cat "$TMPERR"
+```
+
+Present the full output verbatim under a `CODEX SAYS (code review):` header:
+
+```
+CODEX SAYS (code review):
+════════════════════════════════════════════════════════════
+<full codex output, verbatim — do not truncate or summarize>
+════════════════════════════════════════════════════════════
+GATE: PASS                    Tokens: N | Est. cost: ~$X.XX
+```
+
+Check the output for `[P1]` markers. If found: `GATE: FAIL`. If no `[P1]`: `GATE: PASS`.
+
+**If GATE is FAIL:** use AskUserQuestion:
+
+```
+Codex found N critical issues in the diff.
+
+A) Investigate and fix now (recommended)
+B) Ship anyway — these issues may cause production problems
+```
+
+If the user chooses A: read the Codex findings carefully and work to address them. After fixing, re-run tests (Step 3) since code has changed. Then re-run `codex review` to verify the gate is now PASS.
+
+If the user chooses B: continue to the next step.
+
+### Error handling (code review)
+
+Before persisting the gate result, check for errors. All errors are non-blocking — Codex is a quality enhancement, not a prerequisite. Check `$TMPERR` output (already read above) for error indicators:
+
+- **Auth failure:** If stderr contains "auth", "login", "unauthorized", or "API key", tell the user: "Codex authentication failed. Run \`codex login\` in your terminal to authenticate via ChatGPT." Do NOT persist a review log entry. Continue to the adversarial step (it will likely fail too, but try anyway).
+- **Timeout:** If the Bash call times out (5 min), tell the user: "Codex timed out after 5 minutes. The diff may be too large or the API may be slow." Do NOT persist a review log entry. Skip to cleanup.
+- **Empty response:** If codex returned no stdout output, tell the user: "Codex returned no response. Stderr: <paste relevant error>." Do NOT persist a review log entry. Skip to cleanup.
+
+**Only if codex produced a real review (non-empty stdout):** Persist the code review result:
+```bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","gate":"GATE","commit":"'"$(git rev-parse --short HEAD)"'"}'
+```
+
+Substitute: STATUS ("clean" if PASS, "issues_found" if FAIL), GATE ("pass" or "fail").
+
+**Adversarial challenge:** Run:
+```bash
+TMPERR_ADV=$(mktemp /tmp/codex-adv-XXXXXXXX)
+codex exec "Review the changes on this branch against the base branch. Run git diff origin/<base> to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption paths. Be adversarial. Be thorough. No compliments — just the problems." -s read-only -c 'model_reasoning_effort="xhigh"' --enable web_search_cached 2>"$TMPERR_ADV"
+```
+
+After the command completes, read adversarial stderr:
+```bash
+cat "$TMPERR_ADV"
+```
+
+Present the full output verbatim under a `CODEX SAYS (adversarial challenge):` header. This is informational — it never blocks shipping. If the adversarial command timed out or returned no output, note this to the user and continue.
+
+**Cleanup:** Run `rm -f "$TMPERR" "$TMPERR_ADV"` after processing.
 
 ---
 
@@ -1045,7 +1122,7 @@ doc updates — the user runs `/ship` and documentation stays current without a 
 - **Never skip tests.** If tests fail, stop.
 - **Never skip the pre-landing review.** If checklist.md is unreadable, stop.
 - **Never force push.** Use regular `git push` only.
-- **Never ask for confirmation** except for MINOR/MAJOR version bumps and pre-landing review ASK items (batched into at most one AskUserQuestion).
+- **Never ask for trivial confirmations** (e.g., "ready to push?", "create PR?"). DO stop for: version bumps (MINOR/MAJOR), pre-landing review findings (ASK items), Codex critical findings ([P1]), and the one-time Codex adoption prompt.
 - **Always use the 4-digit version format** from the VERSION file.
 - **Date format in CHANGELOG:** `YYYY-MM-DD`
 - **Split commits for bisectability** — each commit = one logical change.

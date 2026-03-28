@@ -42,7 +42,7 @@ Expect first useful run in under 5 minutes on any repo with tests already set up
 
 ## Install — takes 30 seconds
 
-**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+
+**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+, [Node.js](https://nodejs.org/) (Windows only)
 
 ### Step 1: Install on your machine
 
@@ -224,6 +224,8 @@ Fifteen specialists and six power tools. All slash commands. All Markdown. All f
 **`/browse` fails?** `cd ~/.claude/skills/gstack && bun install && bun run build`
 
 **Stale install?** Run `/gstack-upgrade` — or set `auto_upgrade: true` in `~/.gstack/config.yaml`
+
+**Windows users:** gstack works on Windows 11 via Git Bash or WSL. Node.js is required in addition to Bun — Bun has a known bug with Playwright's pipe transport on Windows ([bun#4253](https://github.com/oven-sh/bun/issues/4253)). The browse server automatically falls back to Node.js. Make sure both `bun` and `node` are on your PATH.
 
 **Claude says it can't see the skills?** Make sure your project's `CLAUDE.md` has a gstack section. Add this:
 

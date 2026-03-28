@@ -416,6 +416,98 @@ describe('REVIEW_DASHBOARD resolver', () => {
   });
 });
 
+// --- {{SPEC_REVIEW_LOOP}} resolver tests ---
+
+describe('SPEC_REVIEW_LOOP resolver', () => {
+  const content = fs.readFileSync(path.join(ROOT, 'office-hours', 'SKILL.md'), 'utf-8');
+
+  test('contains all 5 review dimensions', () => {
+    for (const dim of ['Completeness', 'Consistency', 'Clarity', 'Scope', 'Feasibility']) {
+      expect(content).toContain(dim);
+    }
+  });
+
+  test('references Agent tool for subagent dispatch', () => {
+    expect(content).toMatch(/Agent.*tool/i);
+  });
+
+  test('specifies max 3 iterations', () => {
+    expect(content).toMatch(/3.*iteration|maximum.*3/i);
+  });
+
+  test('includes quality score', () => {
+    expect(content).toContain('quality score');
+  });
+
+  test('includes metrics path', () => {
+    expect(content).toContain('spec-review.jsonl');
+  });
+
+  test('includes convergence guard', () => {
+    expect(content).toMatch(/[Cc]onvergence/);
+  });
+
+  test('includes graceful failure handling', () => {
+    expect(content).toMatch(/skip.*review|unavailable/i);
+  });
+});
+
+// --- {{DESIGN_SKETCH}} resolver tests ---
+
+describe('DESIGN_SKETCH resolver', () => {
+  const content = fs.readFileSync(path.join(ROOT, 'office-hours', 'SKILL.md'), 'utf-8');
+
+  test('references DESIGN.md for design system constraints', () => {
+    expect(content).toContain('DESIGN.md');
+  });
+
+  test('contains wireframe or sketch terminology', () => {
+    expect(content).toMatch(/wireframe|sketch/i);
+  });
+
+  test('references browse binary for rendering', () => {
+    expect(content).toContain('$B goto');
+  });
+
+  test('references screenshot capture', () => {
+    expect(content).toContain('$B screenshot');
+  });
+
+  test('specifies rough aesthetic', () => {
+    expect(content).toMatch(/[Rr]ough|hand-drawn/);
+  });
+
+  test('includes skip conditions', () => {
+    expect(content).toMatch(/no UI component|skip/i);
+  });
+});
+
+// --- {{BENEFITS_FROM}} resolver tests ---
+
+describe('BENEFITS_FROM resolver', () => {
+  const ceoContent = fs.readFileSync(path.join(ROOT, 'plan-ceo-review', 'SKILL.md'), 'utf-8');
+  const engContent = fs.readFileSync(path.join(ROOT, 'plan-eng-review', 'SKILL.md'), 'utf-8');
+
+  test('plan-ceo-review contains prerequisite skill offer', () => {
+    expect(ceoContent).toContain('Prerequisite Skill Offer');
+    expect(ceoContent).toContain('/office-hours');
+  });
+
+  test('plan-eng-review contains prerequisite skill offer', () => {
+    expect(engContent).toContain('Prerequisite Skill Offer');
+    expect(engContent).toContain('/office-hours');
+  });
+
+  test('offer includes graceful decline', () => {
+    expect(ceoContent).toContain('No worries');
+  });
+
+  test('skills without benefits-from do NOT have prerequisite offer', () => {
+    const qaContent = fs.readFileSync(path.join(ROOT, 'qa', 'SKILL.md'), 'utf-8');
+    expect(qaContent).not.toContain('Prerequisite Skill Offer');
+  });
+});
+
 // ─── Codex Generation Tests ─────────────────────────────────
 
 describe('Codex generation (--host codex)', () => {
@@ -490,6 +582,16 @@ describe('Codex generation (--host codex)', () => {
   test('/codex skill excluded from Codex output', () => {
     expect(fs.existsSync(path.join(AGENTS_DIR, 'gstack-codex', 'SKILL.md'))).toBe(false);
     expect(fs.existsSync(path.join(AGENTS_DIR, 'gstack-codex'))).toBe(false);
+  });
+
+  test('Codex review step stripped from Codex-host ship and review', () => {
+    const shipContent = fs.readFileSync(path.join(AGENTS_DIR, 'gstack-ship', 'SKILL.md'), 'utf-8');
+    expect(shipContent).not.toContain('codex review --base');
+    expect(shipContent).not.toContain('Investigate and fix');
+
+    const reviewContent = fs.readFileSync(path.join(AGENTS_DIR, 'gstack-review', 'SKILL.md'), 'utf-8');
+    expect(reviewContent).not.toContain('codex review --base');
+    expect(reviewContent).not.toContain('Investigate and fix');
   });
 
   test('--host codex --dry-run freshness', () => {

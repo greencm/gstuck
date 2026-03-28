@@ -644,6 +644,59 @@ describe('office-hours skill structure', () => {
   test('contains builder operating principles', () => {
     expect(content).toContain('Delight is the currency');
   });
+
+  // Spec Review Loop (Phase 5.5)
+  test('contains spec review loop', () => {
+    expect(content).toContain('Spec Review Loop');
+  });
+
+  test('contains adversarial review dimensions', () => {
+    for (const dim of ['Completeness', 'Consistency', 'Clarity', 'Scope', 'Feasibility']) {
+      expect(content).toContain(dim);
+    }
+  });
+
+  test('contains subagent dispatch instruction', () => {
+    expect(content).toMatch(/Agent.*tool|subagent/i);
+  });
+
+  test('contains max 3 iterations', () => {
+    expect(content).toMatch(/3.*iteration|maximum.*3/i);
+  });
+
+  test('contains quality score', () => {
+    expect(content).toContain('quality score');
+  });
+
+  test('contains spec review metrics path', () => {
+    expect(content).toContain('spec-review.jsonl');
+  });
+
+  test('contains convergence guard', () => {
+    expect(content).toMatch(/convergence/i);
+  });
+
+  // Visual Sketch (Phase 4.5)
+  test('contains visual sketch section', () => {
+    expect(content).toContain('Visual Sketch');
+  });
+
+  test('contains wireframe generation', () => {
+    expect(content).toMatch(/wireframe|sketch/i);
+  });
+
+  test('contains DESIGN.md awareness', () => {
+    expect(content).toContain('DESIGN.md');
+  });
+
+  test('contains browse rendering', () => {
+    expect(content).toContain('$B goto');
+    expect(content).toContain('$B screenshot');
+  });
+
+  test('contains rough aesthetic instruction', () => {
+    expect(content).toMatch(/rough|hand-drawn/i);
+  });
 });
 
 describe('investigate skill structure', () => {
@@ -855,6 +908,22 @@ describe('CEO review mode validation', () => {
     expect(content).toContain('SELECTIVE');
     expect(content).toContain('HOLD SCOPE');
     expect(content).toContain('REDUCTION');
+  });
+
+  // Skill chaining (benefits-from)
+  test('contains prerequisite skill offer for office-hours', () => {
+    expect(content).toContain('Prerequisite Skill Offer');
+    expect(content).toContain('/office-hours');
+  });
+
+  test('contains mid-session detection', () => {
+    expect(content).toContain('Mid-session detection');
+    expect(content).toMatch(/still figuring out|seems lost/i);
+  });
+
+  // Spec review on CEO plans
+  test('contains spec review loop for CEO plan documents', () => {
+    expect(content).toContain('Spec Review Loop');
   });
 });
 
@@ -1187,18 +1256,36 @@ describe('Codex skill', () => {
     expect(content).toContain('mktemp');
   });
 
-  test('codex integration in /review offers second opinion', () => {
+  test('codex integration in /review has config-driven review step', () => {
     const content = fs.readFileSync(path.join(ROOT, 'review', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Codex second opinion');
+    expect(content).toContain('Codex review');
+    expect(content).toContain('codex_reviews');
     expect(content).toContain('codex review');
     expect(content).toContain('adversarial');
+    expect(content).toContain('xhigh');
+    expect(content).toContain('Investigate and fix');
+    expect(content).toContain('CROSS-MODEL');
   });
 
-  test('codex integration in /ship offers review gate', () => {
+  test('codex integration in /ship has config-driven review step', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Codex');
+    expect(content).toContain('Codex review');
+    expect(content).toContain('codex_reviews');
     expect(content).toContain('codex review');
     expect(content).toContain('codex-review');
+    expect(content).toContain('xhigh');
+    expect(content).toContain('Investigate and fix');
+  });
+
+  test('codex-host ship/review do NOT contain codex review step', () => {
+    const shipContent = fs.readFileSync(path.join(ROOT, '.agents', 'skills', 'gstack-ship', 'SKILL.md'), 'utf-8');
+    expect(shipContent).not.toContain('codex review --base');
+    expect(shipContent).not.toContain('Investigate and fix');
+
+    const reviewContent = fs.readFileSync(path.join(ROOT, '.agents', 'skills', 'gstack-review', 'SKILL.md'), 'utf-8');
+    expect(reviewContent).not.toContain('codex review --base');
+    expect(reviewContent).not.toContain('codex_reviews');
+    expect(reviewContent).not.toContain('Investigate and fix');
   });
 
   test('codex integration in /plan-eng-review offers plan critique', () => {
