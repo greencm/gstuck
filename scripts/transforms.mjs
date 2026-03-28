@@ -100,6 +100,11 @@ if (existsSync(GEN_SCRIPT)) {
     ''
   );
 
+  // Strip any lines that write to ~/.gstack/analytics/ (catches all JSONL variants:
+  // skill-usage.jsonl, spec-review.jsonl, and any future analytics files)
+  src = src.replace(/^.*>> ~\/\.gstack\/analytics\/.*$/gm, '');
+  src = src.replace(/.*>> ~\/\.gstack\/analytics\/.*\\n/g, '');
+
   writeFile(GEN_SCRIPT, src);
   console.log('  gen-skill-docs.ts: patched');
 }

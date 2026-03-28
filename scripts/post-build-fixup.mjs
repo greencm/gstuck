@@ -92,6 +92,27 @@ if (telFixed > 0) {
   console.log(`  Stripped telemetry epilogue from ${telFixed} SKILL.md file(s)`);
 }
 
+// ─── Strip any ~/.gstack/analytics/ write lines from all files ──────
+// Catches all JSONL variants (skill-usage.jsonl, spec-review.jsonl, etc.)
+let analyticsFixed = 0;
+for (const f of findFiles(ROOT, ['.md', '.tmpl', '.ts'])) {
+  let src = readFileSync(f, 'utf-8');
+  if (src.includes('~/.gstack/analytics/')) {
+    const before = src;
+    // Remove entire lines that write to analytics
+    src = src.replace(/^.*>> ~\/\.gstack\/analytics\/.*\n?/gm, '');
+    // Remove bash code blocks that became empty after stripping
+    src = src.replace(/```bash\s*```/g, '');
+    if (src !== before) {
+      writeFileSync(f, src);
+      analyticsFixed++;
+    }
+  }
+}
+if (analyticsFixed > 0) {
+  console.log(`  Stripped analytics write lines from ${analyticsFixed} file(s)`);
+}
+
 // ─── Strip telemetry/Supabase content from docs ─────────────────────
 for (const f of findFiles(ROOT, ['.md'])) {
   let src = readFileSync(f, 'utf-8');
