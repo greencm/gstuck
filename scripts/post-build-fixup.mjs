@@ -79,12 +79,19 @@ if (fixed > 0) {
 let telFixed = 0;
 for (const f of findFiles(ROOT, ['.md'])) {
   let src = readFileSync(f, 'utf-8');
+  let changed = false;
   if (src.includes('## Telemetry (run last)')) {
     // Strip from "## Telemetry (run last)" to end of file or next ## heading
     src = src.replace(/## Telemetry \(run last\)[\s\S]*?(?=\n## (?!Telemetry)|$)/g, '');
-    // Clean up trailing whitespace
-    src = src.trimEnd() + '\n';
-    writeFileSync(f, src);
+    changed = true;
+  }
+  // Also strip bullet-list references like "- Telemetry (run last)"
+  if (src.includes('Telemetry (run last)')) {
+    src = src.replace(/^.*Telemetry \(run last\).*\n?/gm, '');
+    changed = true;
+  }
+  if (changed) {
+    writeFileSync(f, src.trimEnd() + '\n');
     telFixed++;
   }
 }
