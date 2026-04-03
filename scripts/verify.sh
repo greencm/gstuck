@@ -53,6 +53,16 @@ if [ -n "$TEL_EPILOGUE" ]; then
   FAIL=1
 fi
 
+# ─── No telemetry infrastructure in generated SKILL.md files ──
+TEL_INFRA=$(grep -rn 'gstack-telemetry-log\|mkdir -p ~/.gstack/analytics\|\.pending-' \
+  --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$TEL_INFRA" ]; then
+  echo "FAIL: telemetry infrastructure found in generated skills:"
+  echo "$TEL_INFRA" | head -10 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── No JSONL writes in generated SKILL.md files ──────────────
 # Exclude CHANGELOG.md — it documents upstream history (not active code)
 JSONL_MATCHES=$(grep -r 'skill-usage\.jsonl' --include='*.md' . 2>/dev/null \
