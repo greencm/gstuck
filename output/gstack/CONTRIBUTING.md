@@ -45,8 +45,10 @@ the issue, fix it, and open a PR.
    ```bash
    # In your core project (the one where gstack annoyed you)
    ln -sfn /path/to/your/gstack-fork .claude/skills/gstack
-   cd .claude/skills/gstack && bun install && bun run build
+   cd .claude/skills/gstack && bun install && bun run build && ./setup
    ```
+   Setup creates the per-skill symlinks (`qa -> gstack/qa`, etc.) and asks your
+   prefix preference. Pass `--no-prefix` to skip the prompt and use short names.
 5. **Fix the issue** — your changes are live immediately in this project
 6. **Test by actually using gstack** — do the thing that annoyed you, verify it's fixed
 7. **Open a PR from your fork**
@@ -56,7 +58,7 @@ project where you actually felt the pain.
 
 ### Session awareness
 
-When you have 3+ gstack sessions open simultaneously, every question tells you which project, which branch, and what's happening. No more staring at a question thinking "wait, which window is this?" The format is consistent across all 15 skills.
+When you have 3+ gstack sessions open simultaneously, every question tells you which project, which branch, and what's happening. No more staring at a question thinking "wait, which window is this?" The format is consistent across all skills.
 
 ## Working on gstack inside the gstack repo
 
@@ -69,8 +71,8 @@ your local edits instead of the global install.
 gstack/                          <- your working tree
 ├── .claude/skills/              <- created by dev-setup (gitignored)
 │   ├── gstack -> ../../         <- symlink back to repo root
-│   ├── review -> gstack/review
-│   ├── ship -> gstack/ship
+│   ├── review -> gstack/review  <- short names (default)
+│   ├── ship -> gstack/ship      <- or gstack-review, gstack-ship if --prefix
 │   └── ...                      <- one symlink per skill
 ├── review/
 │   └── SKILL.md                 <- edit this, test with /review
@@ -81,6 +83,10 @@ gstack/                          <- your working tree
 │   └── dist/                    <- compiled binary (gitignored)
 └── ...
 ```
+
+Skill symlink names depend on your prefix setting (`~/.gstack/config.yaml`).
+Short names (`/review`, `/ship`) are the default. Run `./setup --prefix` if you
+prefer namespaced names (`/gstack-review`, `/gstack-ship`).
 
 ## Day-to-day workflow
 
@@ -145,7 +151,7 @@ Spawns `claude -p` as a subprocess with `--output-format stream-json --verbose`,
 
 ```bash
 # Must run from a plain terminal — can't nest inside Claude Code or Conductor
-EVALS=1 bun test test/skill-e2e.test.ts
+EVALS=1 bun test test/skill-e2e-*.test.ts
 ```
 
 - Gated by `EVALS=1` env var (prevents accidental expensive runs)
@@ -153,7 +159,7 @@ EVALS=1 bun test test/skill-e2e.test.ts
 - API connectivity pre-check — fails fast on ConnectionRefused before burning budget
 - Real-time progress to stderr: `[Ns] turn T tool #C: Name(...)`
 - Saves full NDJSON transcripts and failure JSON for debugging
-- Tests live in `test/skill-e2e.test.ts`, runner logic in `test/helpers/session-runner.ts`
+- Tests live in `test/skill-e2e-*.test.ts` (split by category), runner logic in `test/helpers/session-runner.ts`
 
 ### E2E observability
 
@@ -250,9 +256,9 @@ bun run build
 
 | Aspect | Claude | Codex |
 |--------|--------|-------|
-| Output directory | `{skill}/SKILL.md` | `.agents/skills/gstack-{skill}/SKILL.md` |
+| Output directory | `{skill}/SKILL.md` | `.agents/skills/gstack-{skill}/SKILL.md` (generated at setup, gitignored) |
 | Frontmatter | Full (name, description, allowed-tools, hooks, version) | Minimal (name + description only) |
-| Paths | `~/.claude/skills/gstack` | `~/.codex/skills/gstack` |
+| Paths | `~/.claude/skills/gstack` | `$GSTACK_ROOT` (`.agents/skills/gstack` in a repo, otherwise `~/.codex/skills/gstack`) |
 | Hook skills | `hooks:` frontmatter (enforced by Claude) | Inline safety advisory prose (advisory only) |
 | `/codex` skill | Included (Claude wraps codex exec) | Excluded (self-referential) |
 
@@ -272,7 +278,7 @@ bun run skill:check
 
 ### Dev setup for .agents/
 
-When you run `bin/dev-setup`, it creates symlinks in both `.claude/skills/` and `.agents/skills/` (if applicable), so Codex-compatible agents can discover your dev skills too.
+When you run `bin/dev-setup`, it creates symlinks in both `.claude/skills/` and `.agents/skills/` (if applicable), so Codex-compatible agents can discover your dev skills too. The `.agents/` directory is generated at setup time from `.tmpl` templates — it is gitignored and not committed.
 
 ### Adding a new skill
 
@@ -280,7 +286,7 @@ When you add a new skill template, both hosts get it automatically:
 1. Create `{skill}/SKILL.md.tmpl`
 2. Run `bun run gen:skill-docs` (Claude output) and `bun run gen:skill-docs --host codex` (Codex output)
 3. The dynamic template discovery picks it up — no static list to update
-4. Commit both `{skill}/SKILL.md` and `.agents/skills/gstack-{skill}/SKILL.md`
+4. Commit `{skill}/SKILL.md` — `.agents/` is generated at setup time and gitignored
 
 ## Conductor workspaces
 
@@ -309,25 +315,55 @@ When Conductor creates a new workspace, `bin/dev-setup` runs automatically. It d
 
 **This is the recommended way to develop gstack.** Symlink your gstack checkout
 into the project where you actually use it, so your changes are live while you
-do real work:
+do real work.
+
+### Step 1: Symlink your checkout
 
 ```bash
-# In your core project
+# In your core project (not the gstack repo)
 ln -sfn /path/to/your/gstack-checkout .claude/skills/gstack
-cd .claude/skills/gstack && bun install && bun run build
 ```
 
-Now every gstack skill invocation in this project uses your working tree. Edit a
-template, run `bun run gen:skill-docs`, and the next `/review` or `/qa` call picks
-it up immediately.
+### Step 2: Run setup to create per-skill symlinks
 
-**To go back to the stable global install**, just remove the symlink:
+The `gstack` symlink alone isn't enough. Claude Code discovers skills through
+individual symlinks (`qa -> gstack/qa`, `ship -> gstack/ship`, etc.), not through
+the `gstack/` directory itself. Run `./setup` to create them:
+
+```bash
+cd .claude/skills/gstack && bun install && bun run build && ./setup
+```
+
+Setup will ask whether you want short names (`/qa`) or namespaced (`/gstack-qa`).
+Your choice is saved to `~/.gstack/config.yaml` and remembered for future runs.
+To skip the prompt, pass `--no-prefix` (short names) or `--prefix` (namespaced).
+
+### Step 3: Develop
+
+Edit a template, run `bun run gen:skill-docs`, and the next `/review` or `/qa`
+call picks it up immediately. No restart needed.
+
+### Going back to the stable global install
+
+Remove the project-local symlink. Claude Code falls back to `~/.claude/skills/gstuck/output/gstack/`:
 
 ```bash
 rm .claude/skills/gstack
 ```
 
-Claude Code falls back to `~/.claude/skills/gstuck/output/gstack/` automatically.
+The per-skill symlinks (`qa`, `ship`, etc.) still point to `gstack/...`, so they'll
+resolve to the global install automatically.
+
+### Switching prefix mode
+
+If you vendored gstack with one prefix setting and want to switch:
+
+```bash
+cd .claude/skills/gstack && ./setup --no-prefix   # switch to /qa, /ship
+cd .claude/skills/gstack && ./setup --prefix       # switch to /gstack-qa, /gstack-ship
+```
+
+Setup cleans up the old symlinks automatically. No manual cleanup needed.
 
 ### Alternative: point your global install at a branch
 
@@ -337,10 +373,27 @@ If you don't want per-project symlinks, you can switch the global install:
 cd ~/.claude/skills/gstack
 git fetch origin
 git checkout origin/<branch>
-bun install && bun run build
+bun install && bun run build && ./setup
 ```
 
-This affects all projects. To revert: `git checkout main && git pull && bun run build`.
+This affects all projects. To revert: `git checkout main && git pull && bun run build && ./setup`.
+
+## Community PR triage (wave process)
+
+When community PRs accumulate, batch them into themed waves:
+
+1. **Categorize** — group by theme (security, features, infra, docs)
+2. **Deduplicate** — if two PRs fix the same thing, pick the one that
+   changes fewer lines. Close the other with a note pointing to the winner.
+3. **Collector branch** — create `pr-wave-N`, merge clean PRs, resolve
+   conflicts for dirty ones, verify with `bun test && bun run build`
+4. **Close with context** — every closed PR gets a comment explaining
+   why and what (if anything) supersedes it. Contributors did real work;
+   respect that with clear communication.
+5. **Ship as one PR** — single PR to main with all attributions preserved
+   in merge commits. Include a summary table of what merged and what closed.
+
+See [PR #205](../../pull/205) (v0.8.3) for the first wave as an example.
 
 ## Shipping your changes
 

@@ -41,8 +41,7 @@ This is the combination of `/careful` + `/freeze` in a single command.
 and `/freeze` skill directories. Both must be installed (they are installed together
 by the gstack setup script).
 
-```bash
-```
+
 
 ## Setup
 

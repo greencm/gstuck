@@ -23,7 +23,9 @@ case "${1:-}" in
     VALUE="${3:?Usage: gstack-config set <key> <value>}"
     mkdir -p "$STATE_DIR"
     if grep -qE "^${KEY}:" "$CONFIG_FILE" 2>/dev/null; then
-      sed -i '' "s/^${KEY}:.*/${KEY}: ${VALUE}/" "$CONFIG_FILE"
+      # Portable in-place edit (BSD sed uses -i '', GNU sed uses -i without arg)
+      _tmpfile="$(mktemp "${CONFIG_FILE}.XXXXXX")"
+      sed "s/^${KEY}:.*/${KEY}: ${VALUE}/" "$CONFIG_FILE" > "$_tmpfile" && mv "$_tmpfile" "$CONFIG_FILE"
     else
       echo "${KEY}: ${VALUE}" >> "$CONFIG_FILE"
     fi

@@ -17,8 +17,7 @@ allowed-tools:
 
 Remove the edit restriction set by `/freeze`, allowing edits to all directories.
 
-```bash
-```
+
 
 ## Clear the boundary
 
