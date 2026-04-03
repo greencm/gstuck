@@ -86,6 +86,12 @@ for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-upda
   fi
 done
 
+# ─── .github/ directory should not exist ─────────────────────
+if [ -d ".github" ]; then
+  echo "FAIL: .github/ directory still exists (upstream CI infrastructure)"
+  FAIL=1
+fi
+
 # ─── supabase/ directory should not exist ─────────────────────
 if [ -d "supabase" ]; then
   echo "FAIL: supabase/ directory still exists"
