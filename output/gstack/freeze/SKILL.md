@@ -32,8 +32,7 @@ hooks:
 Lock file edits to a specific directory. Any Edit or Write operation targeting
 a file outside the allowed path will be **blocked** (not just warned).
 
-```bash
-```
+
 
 ## Setup
 
