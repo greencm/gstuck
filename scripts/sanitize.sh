@@ -156,6 +156,14 @@ if [ -d ".agents" ]; then
   rm -rf .agents/
 fi
 
+# ─── Step 2d: Delete upstream .github/ (CI workflows, Docker, linting) ──
+# Upstream's .github/ contains their CI infrastructure. If users vendor
+# gstuck into a project repo, these would conflict with their own workflows.
+if [ -d ".github" ]; then
+  echo "Removing .github/..."
+  rm -rf .github/
+fi
+
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard; do
   if [ -f "$script" ]; then

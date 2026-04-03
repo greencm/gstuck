@@ -189,6 +189,14 @@ git diff --name-status main..origin/sanitize/latest -- output/ | grep '^A' | gre
 Any new file related to telemetry infrastructure is a finding — it needs to be
 added to `sanitize.sh` or `transforms.mjs` for deletion.
 
+Also check that upstream's `.github/` directory was stripped:
+
+```bash
+git diff --name-status main..origin/sanitize/latest -- output/gstack/.github/
+```
+
+If any `.github/` files appear, `sanitize.sh` failed to strip them. This is a finding.
+
 ### Step 10: Produce the report
 
 ```
