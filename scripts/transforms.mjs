@@ -123,10 +123,17 @@ function gutPreambleSource(filePath) {
     src = src.replace(pat, '');
   }
 
-  // Handle dangling if/fi blocks: remove empty "if ... fi" blocks
-  // that were left behind after stripping the telemetry lines inside them
+  // Remove entire .pending-* processing loop (the for...done block)
+  // Line-by-line stripping leaves orphaned fi/done/break fragments
+  src = src.replace(/# zsh-compatible[^\n]*\nfor _PF in[\s\S]*?done/g, '');
+  src = src.replace(/for _PF in \$\(find ~\/\.gstack\/analytics[\s\S]*?done/g, '');
+
+  // Handle dangling if/fi blocks left after stripping telemetry lines inside them
   src = src.replace(/if \[ "\$_TEL" != "off" \]; then\s*fi/g, '');
   src = src.replace(/if \[ "\$_TEL" != "off" \] && \[.*?\]; then\s*fi/g, '');
+  // Clean up orphaned fragments: lone fi, break, done on their own lines
+  src = src.replace(/^\s*fi\s*\n\s*fi\s*\n/gm, '');
+  src = src.replace(/^\s*break\s*\n\s*done\s*\n/gm, '');
 
   writeFile(filePath, src);
   console.log(`  ${filePath}: gutted preamble + telemetry functions`);
@@ -146,12 +153,16 @@ const analyticsPatterns = [
   'spec-review.jsonl',
   'eureka.jsonl',
   'mkdir -p ~/.gstack/analytics',
+  'gstack-timeline-log',
+  'gstack-timeline-read',
+  'gstack-telemetry-log',
+  'gstack-telemetry-sync',
 ];
 
 for (const f of findFiles(ROOT, ['.tmpl', '.md'], ['node_modules', '.git'])) {
   removeLines(f, analyticsPatterns);
 }
-console.log('  Removed inline analytics from templates + SKILL.md files');
+console.log('  Removed inline analytics/telemetry from templates + SKILL.md files');
 
 // ─── Step 6: Remove analytics from hook scripts ──────────────
 
@@ -203,9 +214,9 @@ for (const f of findFiles(ROOT, ['.md', '.ts'], ['node_modules', '.git'])) {
 console.log('  Removed ycombinator.com/apply references');
 
 // ─── Step 12: Replace github.com/garrytan/gstack ─────────────
-// Also check .sh files (bin/gstack-config has a header comment)
+// Check all text file types (bin scripts, extension JS/HTML, setup, docs)
 
-for (const f of findFiles(ROOT, ['.tmpl', '.md', '.sh'], ['node_modules', '.git'])) {
+for (const f of findFiles(ROOT, ['.tmpl', '.md', '.sh', '.ts', '.js', '.html'], ['node_modules', '.git'])) {
   let src = readFile(f);
   if (src.includes('github.com/garrytan/gstack')) {
     src = src.replaceAll('github.com/garrytan/gstack', 'github.com/greencm/gstuck');
