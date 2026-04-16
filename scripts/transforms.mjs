@@ -52,62 +52,92 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ─── Step 4a: Clean gen-skill-docs.ts telemetry lines ─────────
+/** Strip telemetry from a preamble source file (resolvers/preamble.ts or gen-skill-docs.ts).
+ *  Guts functions and removes telemetry lines so the build generates clean output. */
+function gutPreambleSource(filePath) {
+  if (!existsSync(filePath)) return;
+  let src = readFile(filePath);
 
-const GEN_SCRIPT = 'scripts/gen-skill-docs.ts';
-if (existsSync(GEN_SCRIPT)) {
-  let src = readFile(GEN_SCRIPT);
-
-  // Remove telemetry-related lines from the preamble template literal
-  const telemetryPatterns = [
-    /_TEL=.*gstack-config get telemetry.*\n/g,
-    /_TEL_PROMPTED=.*telemetry-prompted.*\n/g,
-    /_TEL_START=.*date.*\n/g,
-    /_SESSION_ID=.*date.*\n/g,
-    /.*echo "TELEMETRY:.*\n/g,
-    /.*echo "TEL_PROMPTED:.*\n/g,
-    /.*skill-usage\.jsonl.*\n/g,
-    /.*mkdir -p ~\/.gstack\/analytics.*\n/g,
-    /.*\.pending-.*\n/g,
-  ];
-  for (const pat of telemetryPatterns) {
-    src = src.replace(pat, '');
-  }
-
-  // Replace generateUpgradeCheck body
+  // Gut generateUpgradeCheck
   src = src.replace(
     /function generateUpgradeCheck\(ctx: TemplateContext\): string \{[\s\S]*?\n\}/,
     "function generateUpgradeCheck(ctx: TemplateContext): string {\n  return ''; // [gstuck] Update checks disabled\n}"
   );
 
-  // Replace generateLakeIntro body
+  // Gut generateLakeIntro
   src = src.replace(
     /function generateLakeIntro\(\): string \{[\s\S]*?\n\}/,
     "function generateLakeIntro(): string {\n  return ''; // [gstuck] Lake intro disabled\n}"
   );
 
-  // Replace generateTelemetryPrompt body
+  // Gut generateTelemetryPrompt
   src = src.replace(
     /function generateTelemetryPrompt\(ctx: TemplateContext\): string \{[\s\S]*?\n\}/,
     "function generateTelemetryPrompt(ctx: TemplateContext): string {\n  return ''; // [gstuck] Telemetry prompt disabled\n}"
   );
 
-  // Remove telemetry epilogue section — strip from "## Telemetry (run last)"
-  // to the closing backtick+semicolon of the template literal it lives in.
-  // This handles any upstream restructuring of what follows the epilogue.
+  // Strip "## Telemetry (run last)" epilogue section from template literals
   src = src.replace(
-    /## Telemetry \(run last\)[\s\S]*?(?=`;\s*\n\})/g,
+    /## Telemetry \(run last\)[\s\S]*?(?=## Plan Mode Safe Operations|## Plan Status Footer|`;\s*\n\})/g,
     ''
   );
 
-  // Strip any lines that write to ~/.gstack/analytics/ (catches all JSONL variants:
-  // skill-usage.jsonl, spec-review.jsonl, and any future analytics files)
-  src = src.replace(/^.*>> ~\/\.gstack\/analytics\/.*$/gm, '');
-  src = src.replace(/.*>> ~\/\.gstack\/analytics\/.*\\n/g, '');
+  // Strip telemetry/analytics/timeline lines from preamble bash template
+  const telemetryLinePatterns = [
+    /^.*_TEL=.*gstack-config get telemetry.*\n?/gm,
+    /^.*_TEL_PROMPTED=.*telemetry-prompted.*\n?/gm,
+    /^.*_TEL_START=.*\n?/gm,
+    /^.*_SESSION_ID=.*\n?/gm,
+    /^.*echo "TELEMETRY:.*\n?/gm,
+    /^.*echo "TEL_PROMPTED:.*\n?/gm,
+    /^.*mkdir -p ~\/\.gstack\/analytics.*\n?/gm,
+    /^.*skill-usage\.jsonl.*\n?/gm,
+    /^.*\.pending-.*\n?/gm,
+    /^.*gstack-telemetry-log.*\n?/gm,
+    /^.*gstack-timeline-log.*\n?/gm,
+    /^.*gstack-timeline-read.*\n?/gm,
+    /^.*>> ~\/\.gstack\/analytics\/.*\n?/gm,
+    /^.*\.gstack\/analytics.*\n?/gm,
+    // Session tracking
+    /^.*mkdir -p ~\/\.gstack\/sessions.*\n?/gm,
+    /^.*touch ~\/\.gstack\/sessions.*\n?/gm,
+    /^.*_SESSIONS=.*\.gstack\/sessions.*\n?/gm,
+    /^.*find ~\/\.gstack\/sessions.*\n?/gm,
+    // Update check
+    /^.*gstack-update-check.*\n?/gm,
+    /^.*\[ -n "\$_UPD" \].*\n?/gm,
+    // gstack-telemetry-log in escaped form (template literals)
+    /.*gstack-telemetry-log.*\\n/g,
+    /.*>> ~\/\.gstack\/analytics\/.*\\n/g,
+    // "# Session timeline" comment lines
+    /^.*# Session timeline.*\n?/gm,
+    // "# zsh-compatible" comment before .pending loop
+    /^.*# zsh-compatible.*\n?/gm,
+    // Telemetry gating blocks
+    /^.*if \[ "\$_TEL" != "off" \].*\n?/gm,
+    /^.*fi\n?/gm,  // this is too broad — skip
+  ];
 
-  writeFile(GEN_SCRIPT, src);
-  console.log('  gen-skill-docs.ts: patched');
+  // Apply all except the overly-broad 'fi' pattern
+  for (const pat of telemetryLinePatterns.slice(0, -1)) {
+    src = src.replace(pat, '');
+  }
+
+  // Handle dangling if/fi blocks: remove empty "if ... fi" blocks
+  // that were left behind after stripping the telemetry lines inside them
+  src = src.replace(/if \[ "\$_TEL" != "off" \]; then\s*fi/g, '');
+  src = src.replace(/if \[ "\$_TEL" != "off" \] && \[.*?\]; then\s*fi/g, '');
+
+  writeFile(filePath, src);
+  console.log(`  ${filePath}: gutted preamble + telemetry functions`);
 }
+
+// ─── Step 4: Gut preamble source ─────────────────────────────
+// Primary defense: gut telemetry at source so the build generates clean output.
+// Works on both the original gen-skill-docs.ts and the refactored resolvers/.
+
+gutPreambleSource('scripts/resolvers/preamble.ts');
+gutPreambleSource('scripts/gen-skill-docs.ts');
 
 // ─── Step 5: Remove inline analytics from .tmpl and SKILL.md ──
 
@@ -173,8 +203,9 @@ for (const f of findFiles(ROOT, ['.md', '.ts'], ['node_modules', '.git'])) {
 console.log('  Removed ycombinator.com/apply references');
 
 // ─── Step 12: Replace github.com/garrytan/gstack ─────────────
+// Also check .sh files (bin/gstack-config has a header comment)
 
-for (const f of findFiles(ROOT, ['.tmpl', '.md'], ['node_modules', '.git'])) {
+for (const f of findFiles(ROOT, ['.tmpl', '.md', '.sh'], ['node_modules', '.git'])) {
   let src = readFile(f);
   if (src.includes('github.com/garrytan/gstack')) {
     src = src.replaceAll('github.com/garrytan/gstack', 'github.com/greencm/gstuck');
@@ -185,7 +216,7 @@ console.log('  Replaced github.com/garrytan/gstack references');
 
 // ─── Step 13: Clean telemetry from pre-generated SKILL.md ─────
 
-const telemetryLinePatterns = [
+const pregenTelemetryPatterns = [
   /_TEL=.*gstack-config get telemetry.*\n?/g,
   /_TEL_PROMPTED=.*telemetry-prompted.*\n?/g,
   /_TEL_START=.*date.*\n?/g,
@@ -193,14 +224,35 @@ const telemetryLinePatterns = [
   /.*echo "TELEMETRY:.*\n?/g,
   /.*echo "TEL_PROMPTED:.*\n?/g,
   /.*\.pending-.*\n?/g,
+  /.*gstack-telemetry-log.*\n?/g,
+  /.*gstack-timeline-log.*\n?/g,
+  /.*mkdir -p ~\/\.gstack\/analytics.*\n?/g,
+  /.*mkdir -p ~\/\.gstack\/sessions.*\n?/g,
+  /.*touch ~\/\.gstack\/sessions.*\n?/g,
+  /.*_SESSIONS=.*\.gstack\/sessions.*\n?/g,
+  /.*find ~\/\.gstack\/sessions.*\n?/g,
+  /.*gstack-update-check.*\n?/g,
+  /.*\[ -n "\$_UPD" \].*\n?/g,
+  /.*skill-usage\.jsonl.*\n?/g,
+  /.*>> ~\/\.gstack\/analytics\/.*\n?/g,
 ];
 
 for (const f of findFiles(ROOT, ['SKILL.md'], ['node_modules', '.git'])) {
   let src = readFile(f);
   let changed = false;
-  for (const pat of telemetryLinePatterns) {
+  for (const pat of pregenTelemetryPatterns) {
     const newSrc = src.replace(pat, '');
     if (newSrc !== src) { src = newSrc; changed = true; }
+  }
+  // Strip telemetry epilogue sections
+  if (src.includes('## Telemetry (run last)')) {
+    src = src.replace(/## Telemetry \(run last\)[\s\S]*?(?=\n## (?!Telemetry)|$)/g, '');
+    changed = true;
+  }
+  // Strip bullet-list telemetry references
+  if (src.includes('Telemetry (run last)')) {
+    src = src.replace(/^.*Telemetry \(run last\).*\n?/gm, '');
+    changed = true;
   }
   if (changed) writeFile(f, src);
 }
