@@ -120,6 +120,42 @@ if [ -f "scripts/gen-skill-docs.ts" ]; then
   fi
 fi
 
+# ─── No telemetry prompt instructions in SKILL.md files ──────
+TEL_PROMPT=$(grep -rn 'TEL_PROMPTED' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$TEL_PROMPT" ]; then
+  echo "FAIL: telemetry prompt instructions found in generated skills:"
+  echo "$TEL_PROMPT" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No lake intro instructions in SKILL.md files ────────────
+LAKE_INTRO=$(grep -rn 'LAKE_INTRO.*no' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$LAKE_INTRO" ]; then
+  echo "FAIL: lake intro instructions found in generated skills:"
+  echo "$LAKE_INTRO" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No upgrade check instructions in SKILL.md files ─────────
+UPGRADE_INSTR=$(grep -rn 'UPGRADE_AVAILABLE' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$UPGRADE_INSTR" ]; then
+  echo "FAIL: upgrade check instructions found in generated skills:"
+  echo "$UPGRADE_INSTR" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No timeline logging in SKILL.md preambles ───────────────
+TIMELINE=$(grep -rn 'timeline\.jsonl\|gstack-timeline-log' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$TIMELINE" ]; then
+  echo "FAIL: timeline logging found in generated skills:"
+  echo "$TIMELINE" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── Skill paths rewritten for gstuck layout ─────────────────
 # Generated SKILL.md preambles must not reference the old skills/gstack/ path
 # Exclude test/ (test fixtures reference old paths), CHANGELOG, README

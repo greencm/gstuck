@@ -135,6 +135,22 @@ function gutPreambleSource(filePath) {
   src = src.replace(/^\s*fi\s*\n\s*fi\s*\n/gm, '');
   src = src.replace(/^\s*break\s*\n\s*done\s*\n/gm, '');
 
+  // Strip lake intro tracking lines
+  src = src.replace(/^.*_LAKE_SEEN=.*completeness-intro-seen.*\n?/gm, '');
+  src = src.replace(/^.*echo "LAKE_INTRO:.*\n?/gm, '');
+
+  // Strip lake intro markdown instruction block (in template literals)
+  src = src.replace(/If \`LAKE_INTRO\` is \`no\`[\s\S]*?touch ~\/\.gstack\/\.completeness-intro-seen[\s\S]*?This only happens once\.\n?\n?/g, '');
+
+  // Strip telemetry prompt markdown instruction block (in template literals)
+  src = src.replace(/If \`TEL_PROMPTED\` is \`no\`[\s\S]*?This only happens once\. If \`TEL_PROMPTED\` is \`yes\`, skip this entirely\.\n?\n?/g, '');
+
+  // Strip proactive prompt gated on TEL_PROMPTED
+  src = src.replace(/If \`PROACTIVE_PROMPTED\` is \`no\` AND \`TEL_PROMPTED\` is \`yes\`[\s\S]*?Always run:\n\`\`\`bash\n/g, '');
+
+  // Strip upgrade check instructions
+  src = src.replace(/If output shows \`UPGRADE_AVAILABLE[\s\S]*?If \`JUST_UPGRADED[^\n]*continue\.\n?\n?/g, '');
+
   writeFile(filePath, src);
   console.log(`  ${filePath}: gutted preamble + telemetry functions`);
 }
@@ -223,6 +239,15 @@ for (const f of findFiles(ROOT, ['.tmpl', '.md', '.sh', '.ts', '.js', '.html'], 
     writeFile(f, src);
   }
 }
+// Also check extensionless scripts (setup, bin/gstack-config, bin/gstack-repo-mode, etc.)
+for (const f of ['setup', ...readdirSync('bin').map(n => join('bin', n))]) {
+  if (!existsSync(f) || statSync(f).isDirectory()) continue;
+  let src = readFile(f);
+  if (src.includes('github.com/garrytan/gstack')) {
+    src = src.replaceAll('github.com/garrytan/gstack', 'github.com/greencm/gstuck');
+    writeFile(f, src);
+  }
+}
 console.log('  Replaced github.com/garrytan/gstack references');
 
 // ─── Step 13: Clean telemetry from pre-generated SKILL.md ─────
@@ -237,6 +262,8 @@ const pregenTelemetryPatterns = [
   /.*\.pending-.*\n?/g,
   /.*gstack-telemetry-log.*\n?/g,
   /.*gstack-timeline-log.*\n?/g,
+  /.*gstack-timeline-read.*\n?/g,
+  /.*timeline\.jsonl.*\n?/g,
   /.*mkdir -p ~\/\.gstack\/analytics.*\n?/g,
   /.*mkdir -p ~\/\.gstack\/sessions.*\n?/g,
   /.*touch ~\/\.gstack\/sessions.*\n?/g,
@@ -265,6 +292,27 @@ for (const f of findFiles(ROOT, ['SKILL.md'], ['node_modules', '.git'])) {
     src = src.replace(/^.*Telemetry \(run last\).*\n?/gm, '');
     changed = true;
   }
+  // Strip orphaned "if _TEL ... fi" blocks left after line removal
+  const telIfFi = src.replace(/if \[ "\$_TEL" != "off" \]; then\s*fi\n?/g, '');
+  if (telIfFi !== src) { src = telIfFi; changed = true; }
+  // Strip orphaned .pending loop fragments (# zsh-compatible block)
+  const pendingLoop = src.replace(/# zsh-compatible[^\n]*\n(?:\s*(?:if \[ -f "\$_PF" \]|fi|rm -f "\$_PF"|break|done)[^\n]*\n)*/g, '');
+  if (pendingLoop !== src) { src = pendingLoop; changed = true; }
+  // Strip lake intro tracking from preamble
+  const lakeLines = src.replace(/^.*_LAKE_SEEN=.*completeness-intro-seen.*\n?/gm, '').replace(/^.*echo "LAKE_INTRO:.*\n?/gm, '');
+  if (lakeLines !== src) { src = lakeLines; changed = true; }
+  // Strip lake intro section (markdown instructions)
+  const lakeIntro = src.replace(/If `LAKE_INTRO` is `no`[\s\S]*?touch ~\/\.gstack\/\.completeness-intro-seen[\s\S]*?This only happens once\.\n?\n?/g, '');
+  if (lakeIntro !== src) { src = lakeIntro; changed = true; }
+  // Strip telemetry prompt section (markdown instructions)
+  const telPrompt = src.replace(/If `TEL_PROMPTED` is `no`[\s\S]*?This only happens once\. If `TEL_PROMPTED` is `yes`, skip this entirely\.\n?\n?/g, '');
+  if (telPrompt !== src) { src = telPrompt; changed = true; }
+  // Strip proactive prompt section gated on TEL_PROMPTED
+  const proactiveTel = src.replace(/If `PROACTIVE_PROMPTED` is `no` AND `TEL_PROMPTED` is `yes`[\s\S]*?Always run:\n```bash\n/g, '');
+  if (proactiveTel !== src) { src = proactiveTel; changed = true; }
+  // Strip upgrade check instructions
+  const upgradeCheck = src.replace(/If output shows `UPGRADE_AVAILABLE[\s\S]*?If `JUST_UPGRADED[^\n]*continue\.\n?\n?/g, '');
+  if (upgradeCheck !== src) { src = upgradeCheck; changed = true; }
   if (changed) writeFile(f, src);
 }
 console.log('  Cleaned telemetry from pre-generated SKILL.md preambles');
@@ -293,6 +341,19 @@ if (existsSync(PKG_JSON)) {
   pkg = pkg.replace(/,(\s*\})/g, '$1');
   writeFile(PKG_JSON, pkg);
   console.log('  Removed analytics script from package.json');
+}
+
+// ─── Step 17: Strip telemetry config section from gstack-config ───
+
+const GSTACK_CONFIG = 'bin/gstack-config';
+if (existsSync(GSTACK_CONFIG)) {
+  let src = readFile(GSTACK_CONFIG);
+  // Remove the telemetry section from CONFIG_HEADER
+  const cleaned = src.replace(/# ─── Telemetry ─[^\n]*\n(?:#[^\n]*\n)*/g, '');
+  if (cleaned !== src) {
+    writeFile(GSTACK_CONFIG, cleaned);
+    console.log('  Stripped telemetry config section from gstack-config');
+  }
 }
 
 console.log('Transforms complete.');
