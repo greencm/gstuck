@@ -308,7 +308,7 @@ for (const f of findFiles(ROOT, ['SKILL.md'], ['node_modules', '.git'])) {
   const telPrompt = src.replace(/If `TEL_PROMPTED` is `no`[\s\S]*?This only happens once\. If `TEL_PROMPTED` is `yes`, skip this entirely\.\n?\n?/g, '');
   if (telPrompt !== src) { src = telPrompt; changed = true; }
   // Strip proactive prompt section gated on TEL_PROMPTED
-  const proactiveTel = src.replace(/If `PROACTIVE_PROMPTED` is `no` AND `TEL_PROMPTED` is `yes`[\s\S]*?Always run:\n```bash\n/g, '');
+  const proactiveTel = src.replace(/If `PROACTIVE_PROMPTED` is `no` AND `TEL_PROMPTED` is `yes`[\s\S]*?skip this entirely\.\n?\n?/g, '');
   if (proactiveTel !== src) { src = proactiveTel; changed = true; }
   // Strip upgrade check instructions
   const upgradeCheck = src.replace(/If output shows `UPGRADE_AVAILABLE[\s\S]*?If `JUST_UPGRADED[^\n]*continue\.\n?\n?/g, '');
