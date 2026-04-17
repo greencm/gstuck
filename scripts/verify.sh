@@ -96,11 +96,13 @@ for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-upda
   fi
 done
 
-# ─── .github/ directory should not exist ─────────────────────
-if [ -d ".github" ]; then
-  echo "FAIL: .github/ directory still exists (upstream CI infrastructure)"
-  FAIL=1
-fi
+# ─── Host-specific directories should not exist ─────────────
+for dir in .github .agents .factory; do
+  if [ -d "$dir" ]; then
+    echo "FAIL: $dir/ directory still exists"
+    FAIL=1
+  fi
+done
 
 # ─── supabase/ directory should not exist ─────────────────────
 if [ -d "supabase" ]; then
@@ -139,8 +141,10 @@ if [ -n "$LAKE_INTRO" ]; then
 fi
 
 # ─── No upgrade check instructions in SKILL.md files ─────────
+# Exclude gstack-upgrade/ (it's the upgrade skill itself, legitimately references UPGRADE_AVAILABLE)
 UPGRADE_INSTR=$(grep -rn 'UPGRADE_AVAILABLE' --include='*.md' . 2>/dev/null \
-  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md \
+  | grep -v 'gstack-upgrade/' || true)
 if [ -n "$UPGRADE_INSTR" ]; then
   echo "FAIL: upgrade check instructions found in generated skills:"
   echo "$UPGRADE_INSTR" | head -5 | sed 's/^/  /'
