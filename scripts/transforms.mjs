@@ -126,11 +126,11 @@ function gutPreambleSource(filePath) {
     /^.*# zsh-compatible.*\n?/gm,
     // Telemetry gating blocks
     /^.*if \[ "\$_TEL" != "off" \].*\n?/gm,
-    /^.*fi\n?/gm,  // this is too broad — skip
+    // Orphaned .pending-* loop body lines
+    /^.*\$_PF.*\n?/gm,
   ];
 
-  // Apply all except the overly-broad 'fi' pattern
-  for (const pat of telemetryLinePatterns.slice(0, -1)) {
+  for (const pat of telemetryLinePatterns) {
     src = src.replace(pat, '');
   }
 
@@ -309,6 +309,12 @@ for (const f of findFiles(ROOT, ['SKILL.md'], ['node_modules', '.git'])) {
   // Strip orphaned .pending loop fragments (# zsh-compatible block)
   const pendingLoop = src.replace(/# zsh-compatible[^\n]*\n(?:\s*(?:if \[ -f "\$_PF" \]|fi|rm -f "\$_PF"|break|done)[^\n]*\n)*/g, '');
   if (pendingLoop !== src) { src = pendingLoop; changed = true; }
+  // Strip any remaining $_PF lines (orphaned loop body)
+  const pfLines = src.replace(/^.*\$_PF.*\n?/gm, '');
+  if (pfLines !== src) { src = pfLines; changed = true; }
+  // Strip orphaned fi/break/done lines left inside empty bash blocks
+  const orphans = src.replace(/^(fi|break|done)\s*\n/gm, '');
+  if (orphans !== src) { src = orphans; changed = true; }
   // Strip lake intro tracking from preamble
   const lakeLines = src.replace(/^.*_LAKE_SEEN=.*completeness-intro-seen.*\n?/gm, '').replace(/^.*echo "LAKE_INTRO:.*\n?/gm, '');
   if (lakeLines !== src) { src = lakeLines; changed = true; }
