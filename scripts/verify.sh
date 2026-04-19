@@ -96,11 +96,13 @@ for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-upda
   fi
 done
 
-# ─── .github/ directory should not exist ─────────────────────
-if [ -d ".github" ]; then
-  echo "FAIL: .github/ directory still exists (upstream CI infrastructure)"
-  FAIL=1
-fi
+# ─── Host-specific directories should not exist ─────────────
+for dir in .github .agents .factory; do
+  if [ -d "$dir" ]; then
+    echo "FAIL: $dir/ directory still exists"
+    FAIL=1
+  fi
+done
 
 # ─── supabase/ directory should not exist ─────────────────────
 if [ -d "supabase" ]; then
@@ -118,6 +120,45 @@ if [ -f "scripts/gen-skill-docs.ts" ]; then
      ! grep -q 'gstuck.*disabled' "scripts/gen-skill-docs.ts"; then
     echo "WARN: generateUpgradeCheck may not be properly neutralized"
   fi
+fi
+
+# ─── No telemetry prompt instructions in SKILL.md files ──────
+TEL_PROMPT=$(grep -rn 'TEL_PROMPTED' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$TEL_PROMPT" ]; then
+  echo "FAIL: telemetry prompt instructions found in generated skills:"
+  echo "$TEL_PROMPT" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No lake intro instructions in SKILL.md files ────────────
+LAKE_INTRO=$(grep -rn 'LAKE_INTRO.*no' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+if [ -n "$LAKE_INTRO" ]; then
+  echo "FAIL: lake intro instructions found in generated skills:"
+  echo "$LAKE_INTRO" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No upgrade check instructions in SKILL.md files ─────────
+# Exclude gstack-upgrade/ (it's the upgrade skill itself, legitimately references UPGRADE_AVAILABLE)
+UPGRADE_INSTR=$(grep -rn 'UPGRADE_AVAILABLE' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md \
+  | grep -v 'gstack-upgrade/' || true)
+if [ -n "$UPGRADE_INSTR" ]; then
+  echo "FAIL: upgrade check instructions found in generated skills:"
+  echo "$UPGRADE_INSTR" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No timeline logging in SKILL.md preambles ───────────────
+TIMELINE=$(grep -rn 'timeline\.jsonl\|gstack-timeline-log' --include='*.md' . 2>/dev/null \
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md \
+  | grep -v 'docs/designs/' || true)
+if [ -n "$TIMELINE" ]; then
+  echo "FAIL: timeline logging found in generated skills:"
+  echo "$TIMELINE" | head -5 | sed 's/^/  /'
+  FAIL=1
 fi
 
 # ─── Skill paths rewritten for gstuck layout ─────────────────

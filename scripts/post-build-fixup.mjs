@@ -35,11 +35,13 @@ function findFiles(dir, extensions, excludeDirs = ['node_modules', '.git']) {
 
 let fixed = 0;
 
-// ─── Remove .agents/ directory (Agent SDK layout not used by gstuck) ──
-const agentsDir = join(ROOT, '.agents');
-if (existsSync(agentsDir)) {
-  rmSync(agentsDir, { recursive: true, force: true });
-  console.log('  Removed .agents/ directory');
+// ─── Remove host-specific directories (not used by gstuck) ──
+for (const dir of ['.agents', '.factory']) {
+  const dirPath = join(ROOT, dir);
+  if (existsSync(dirPath)) {
+    rmSync(dirPath, { recursive: true, force: true });
+    console.log(`  Removed ${dir}/ directory`);
+  }
 }
 
 // ─── Rewrite any surviving skills/gstack/ paths ──────────────────────

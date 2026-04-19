@@ -150,11 +150,13 @@ rm -rf supabase/
 echo "Removing analytics/telemetry CLI and tests..."
 rm -f scripts/analytics.ts test/analytics.test.ts test/telemetry.test.ts
 
-# ─── Step 2c: Delete .agents/ directory (Agent SDK layout not used) ──
-if [ -d ".agents" ]; then
-  echo "Removing .agents/..."
-  rm -rf .agents/
-fi
+# ─── Step 2c: Delete host-specific directories (not used by gstuck) ──
+for dir in .agents .factory; do
+  if [ -d "$dir" ]; then
+    echo "Removing $dir/..."
+    rm -rf "$dir/"
+  fi
+done
 
 # ─── Step 2d: Delete upstream .github/ (CI workflows, Docker, linting) ──
 # Upstream's .github/ contains their CI infrastructure. If users vendor
