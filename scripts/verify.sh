@@ -153,7 +153,8 @@ fi
 
 # ─── No timeline logging in SKILL.md preambles ───────────────
 TIMELINE=$(grep -rn 'timeline\.jsonl\|gstack-timeline-log' --include='*.md' . 2>/dev/null \
-  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md || true)
+  | grep -v node_modules | grep -v CHANGELOG.md | grep -v test/ | grep -v TODOS.md \
+  | grep -v 'docs/designs/' || true)
 if [ -n "$TIMELINE" ]; then
   echo "FAIL: timeline logging found in generated skills:"
   echo "$TIMELINE" | head -5 | sed 's/^/  /'
