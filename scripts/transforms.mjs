@@ -76,6 +76,16 @@ function gutPreambleSource(filePath) {
     "function generateTelemetryPrompt(ctx: TemplateContext): string {\n  return ''; // [gstuck] Telemetry prompt disabled\n}"
   );
 
+  // Gut generateProactivePrompt — it gates on TEL_PROMPTED which no longer exists.
+  // Replace with a version that prompts unconditionally on PROACTIVE_PROMPTED=no.
+  src = src.replace(
+    /function generateProactivePrompt\(ctx: TemplateContext\): string \{[\s\S]*?\n\}/,
+    `function generateProactivePrompt(ctx: TemplateContext): string {
+  // [gstuck] Simplified — no telemetry gate
+  return '';
+}`
+  );
+
   // Strip "## Telemetry (run last)" epilogue section from template literals
   src = src.replace(
     /## Telemetry \(run last\)[\s\S]*?(?=## Plan Mode Safe Operations|## Plan Status Footer|`;\s*\n\})/g,
@@ -96,6 +106,7 @@ function gutPreambleSource(filePath) {
     /^.*gstack-telemetry-log.*\n?/gm,
     /^.*gstack-timeline-log.*\n?/gm,
     /^.*gstack-timeline-read.*\n?/gm,
+    /^.*timeline\.jsonl.*\n?/gm,
     /^.*>> ~\/\.gstack\/analytics\/.*\n?/gm,
     /^.*\.gstack\/analytics.*\n?/gm,
     // Session tracking
