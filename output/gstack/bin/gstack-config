@@ -13,21 +13,60 @@ set -euo pipefail
 STATE_DIR="${GSTACK_STATE_DIR:-$HOME/.gstack}"
 CONFIG_FILE="$STATE_DIR/config.yaml"
 
+# Annotated header for new config files. Written once on first `set`.
+CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on next skill run.
+# Docs: https://github.com/greencm/gstuck
+#
+# ─── Behavior ────────────────────────────────────────────────────────
+# proactive: true           # Auto-invoke skills when your request matches one.
+#                           # Set to false to only run skills you type explicitly.
+#
+# routing_declined: false   # Set to true to skip the CLAUDE.md routing injection
+#                           # prompt. Set back to false to be asked again.
+#
+'
+
 case "${1:-}" in
   get)
     KEY="${2:?Usage: gstack-config get <key>}"
+    # Validate key (alphanumeric + underscore only)
+    if ! printf '%s' "$KEY" | grep -qE '^[a-zA-Z0-9_]+$'; then
+      echo "Error: key must contain only alphanumeric characters and underscores" >&2
+      exit 1
+    fi
     grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true
     ;;
   set)
     KEY="${2:?Usage: gstack-config set <key> <value>}"
     VALUE="${3:?Usage: gstack-config set <key> <value>}"
+    # Validate key (alphanumeric + underscore only)
+    if ! printf '%s' "$KEY" | grep -qE '^[a-zA-Z0-9_]+$'; then
+      echo "Error: key must contain only alphanumeric characters and underscores" >&2
+      exit 1
+    fi
+    # V1: whitelist values for keys with closed value domains. Unknown values warn + default.
+    if [ "$KEY" = "explain_level" ] && [ "$VALUE" != "default" ] && [ "$VALUE" != "terse" ]; then
+      echo "Warning: explain_level '$VALUE' not recognized. Valid values: default, terse. Using default." >&2
+      VALUE="default"
+    fi
     mkdir -p "$STATE_DIR"
+    # Write annotated header on first creation
+    if [ ! -f "$CONFIG_FILE" ]; then
+      printf '%s' "$CONFIG_HEADER" > "$CONFIG_FILE"
+    fi
+    # Escape sed special chars in value and drop embedded newlines
+    ESC_VALUE="$(printf '%s' "$VALUE" | head -1 | sed 's/[&/\]/\\&/g')"
     if grep -qE "^${KEY}:" "$CONFIG_FILE" 2>/dev/null; then
       # Portable in-place edit (BSD sed uses -i '', GNU sed uses -i without arg)
       _tmpfile="$(mktemp "${CONFIG_FILE}.XXXXXX")"
-      sed "s/^${KEY}:.*/${KEY}: ${VALUE}/" "$CONFIG_FILE" > "$_tmpfile" && mv "$_tmpfile" "$CONFIG_FILE"
+      sed "/^${KEY}:/s/.*/${KEY}: ${ESC_VALUE}/" "$CONFIG_FILE" > "$_tmpfile" && mv "$_tmpfile" "$CONFIG_FILE"
     else
       echo "${KEY}: ${VALUE}" >> "$CONFIG_FILE"
+    fi
+    # Auto-relink skills when prefix setting changes (skip during setup to avoid recursive call)
+    if [ "$KEY" = "skill_prefix" ] && [ -z "${GSTACK_SETUP_RUNNING:-}" ]; then
+      GSTACK_RELINK="$(dirname "$0")/gstack-relink"
+      [ -x "$GSTACK_RELINK" ] && "$GSTACK_RELINK" || true
     fi
     ;;
   list)
