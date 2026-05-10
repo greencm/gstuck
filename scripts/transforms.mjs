@@ -173,6 +173,34 @@ function gutPreambleSource(filePath) {
 gutPreambleSource('scripts/resolvers/preamble.ts');
 gutPreambleSource('scripts/gen-skill-docs.ts');
 
+// ─── Step 4b: Gut extracted preamble files (v1.26+ refactored layout) ───────
+// v1.26 moved generateLakeIntro/generateTelemetryPrompt/etc. into individual
+// files under scripts/resolvers/preamble/. gutPreambleSource targets the old
+// monolithic preamble.ts; these files need separate handling.
+
+const EXTRACTED_PREAMBLE_STUBS = {
+  'generate-lake-intro.ts':
+    "export function generateLakeIntro(): string {\n  return ''; // [gstuck] Lake intro disabled\n}",
+  'generate-telemetry-prompt.ts':
+    "export function generateTelemetryPrompt(ctx: TemplateContext): string {\n  return ''; // [gstuck] Telemetry prompt disabled\n}",
+  'generate-proactive-prompt.ts':
+    "export function generateProactivePrompt(ctx: TemplateContext): string {\n  return ''; // [gstuck] Proactive prompt disabled\n}",
+  'generate-upgrade-check.ts':
+    "export function generateUpgradeCheck(ctx: TemplateContext): string {\n  return ''; // [gstuck] Update checks disabled\n}",
+};
+
+for (const [filename, stub] of Object.entries(EXTRACTED_PREAMBLE_STUBS)) {
+  const filePath = join('scripts/resolvers/preamble', filename);
+  if (!existsSync(filePath)) continue;
+  let src = readFile(filePath);
+  // Replace from the exported function declaration to end of file (single function per file)
+  const newSrc = src.replace(/export function \w+\([^)]*\): string \{[\s\S]+/, stub + '\n');
+  if (newSrc !== src) {
+    writeFile(filePath, newSrc);
+    console.log(`  ${filePath}: gutted`);
+  }
+}
+
 // ─── Step 5: Remove inline analytics from .tmpl and SKILL.md ──
 
 const analyticsPatterns = [
@@ -184,6 +212,7 @@ const analyticsPatterns = [
   'gstack-timeline-read',
   'gstack-telemetry-log',
   'gstack-telemetry-sync',
+  'timeline.jsonl',
 ];
 
 for (const f of findFiles(ROOT, ['.tmpl', '.md'], ['node_modules', '.git'])) {
