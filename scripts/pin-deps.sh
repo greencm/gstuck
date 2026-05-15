@@ -99,13 +99,22 @@ if [ "$QUARANTINE_DAYS" -gt 0 ]; then
   echo "Running supply-chain quarantine check (${QUARANTINE_DAYS}-day window)..."
   QUARANTINE_FAIL=0
 
-  # Extract pinned dependency names and versions from package.json
+  # Extract RESOLVED package versions from node_modules (populated by bun install).
+  # Using node_modules instead of package.json specs avoids false UNKNOWN results
+  # when a spec is a partial semver like "5" — npm registry time keys require
+  # exact versions like "5.3.0". Falls back to the stripped spec if unreadable.
   DEPS=$(node -e "
+    const fs = require('fs');
+    const path = require('path');
     const pkg = require('./package.json');
     const all = { ...pkg.dependencies, ...(pkg.devDependencies || {}) };
-    for (const [name, version] of Object.entries(all)) {
-      const clean = version.replace(/^[\^~]/, '');
-      console.log(name + '@' + clean);
+    for (const [name, spec] of Object.entries(all)) {
+      let version = spec.replace(/^[\^~]/, '');
+      try {
+        const installed = JSON.parse(fs.readFileSync(path.join('node_modules', name, 'package.json'), 'utf-8'));
+        if (installed.version) version = installed.version;
+      } catch {}
+      console.log(name + '@' + version);
     }
   ")
 
