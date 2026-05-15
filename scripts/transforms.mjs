@@ -172,6 +172,9 @@ function gutPreambleSource(filePath) {
 
 gutPreambleSource('scripts/resolvers/preamble.ts');
 gutPreambleSource('scripts/gen-skill-docs.ts');
+gutPreambleSource('scripts/resolvers/preamble/generate-preamble-bash.ts');
+gutPreambleSource('scripts/resolvers/preamble/generate-completion-status.ts');
+gutPreambleSource('scripts/resolvers/preamble/generate-context-recovery.ts');
 
 // ─── Step 4b: Gut extracted preamble files (v1.26+ refactored layout) ───────
 // v1.26 moved generateLakeIntro/generateTelemetryPrompt/etc. into individual
