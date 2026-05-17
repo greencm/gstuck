@@ -143,6 +143,7 @@ describe('Command registry consistency', () => {
     const validKeys = new Set([
       'interactive', 'compact', 'depth', 'selector',
       'diff', 'annotate', 'outputPath', 'cursorInteractive',
+      'heatmap',
     ]);
     for (const flag of SNAPSHOT_FLAGS) {
       expect(validKeys.has(flag.optionKey)).toBe(true);
@@ -565,10 +566,21 @@ describe('v0.4.1 preamble features', () => {
   const skillsWithPreamble = [...tier1Skills, ...tier2PlusSkills];
 
   for (const skill of tier2PlusSkills) {
-    test(`${skill} contains RECOMMENDATION format`, () => {
+    test(`${skill} contains AskUserQuestion Pros/Cons format`, () => {
       const content = fs.readFileSync(path.join(ROOT, skill), 'utf-8');
-      expect(content).toContain('RECOMMENDATION: Choose');
+      // v1.7.0.0 Pros/Cons format tokens. The preamble resolver
+      // (generate-ask-user-format.ts) injects all of these into every
+      // tier-2+ skill. Drop any of them and the test catches it on the
+      // next `bun test` run.
       expect(content).toContain('AskUserQuestion');
+      expect(content).toContain('Pros / cons:');
+      expect(content).toContain('Recommendation: <choice>');
+      expect(content).toContain('Net:');
+      expect(content).toContain('ELI10');
+      expect(content).toContain('Stakes if we pick wrong:');
+      // Concrete format markers must be documented in the resolver text
+      expect(content).toMatch(/✅/);
+      expect(content).toMatch(/❌/);
     });
   }
 
@@ -735,45 +747,8 @@ describe('investigate skill structure', () => {
   }
 });
 
-// --- Contributor mode preamble structure validation ---
-
-describe('Contributor mode preamble structure', () => {
-  const skillsWithPreamble = [
-    'SKILL.md', 'browse/SKILL.md', 'qa/SKILL.md',
-    'qa-only/SKILL.md',
-    'setup-browser-cookies/SKILL.md',
-    'ship/SKILL.md', 'review/SKILL.md',
-    'plan-ceo-review/SKILL.md', 'plan-eng-review/SKILL.md',
-    'retro/SKILL.md',
-    'plan-design-review/SKILL.md',
-    'design-review/SKILL.md',
-    'design-consultation/SKILL.md',
-    'document-release/SKILL.md',
-    'canary/SKILL.md',
-    'benchmark/SKILL.md',
-    'land-and-deploy/SKILL.md',
-    'setup-deploy/SKILL.md',
-  ];
-
-  for (const skill of skillsWithPreamble) {
-    test(`${skill} has 0-10 rating in contributor mode`, () => {
-      const content = fs.readFileSync(path.join(ROOT, skill), 'utf-8');
-      expect(content).toContain('0-10');
-      expect(content).toContain('Rating');
-    });
-
-    test(`${skill} has "what would make this a 10" field`, () => {
-      const content = fs.readFileSync(path.join(ROOT, skill), 'utf-8');
-      expect(content).toContain('What would make this a 10');
-    });
-
-    test(`${skill} uses periodic reflection (not per-command)`, () => {
-      const content = fs.readFileSync(path.join(ROOT, skill), 'utf-8');
-      expect(content).toContain('workflow step');
-      expect(content).not.toContain('After you use gstack-provided CLIs');
-    });
-  }
-});
+// Contributor mode was removed in v0.13.10.0 — replaced by operational self-improvement.
+// Tests for contributor mode preamble structure are no longer applicable.
 
 describe('Enum & Value Completeness in review checklist', () => {
   const checklist = fs.readFileSync(path.join(ROOT, 'review', 'checklist.md'), 'utf-8');
@@ -825,9 +800,8 @@ describe('Enum & Value Completeness in review checklist', () => {
 
 describe('Completeness Principle in generated SKILL.md files', () => {
   const skillsWithPreamble = [
-    'SKILL.md', 'browse/SKILL.md', 'qa/SKILL.md',
+    'qa/SKILL.md',
     'qa-only/SKILL.md',
-    'setup-browser-cookies/SKILL.md',
     'ship/SKILL.md', 'review/SKILL.md',
     'plan-ceo-review/SKILL.md', 'plan-eng-review/SKILL.md',
     'retro/SKILL.md',
@@ -845,11 +819,12 @@ describe('Completeness Principle in generated SKILL.md files', () => {
     });
   }
 
-  test('Completeness Principle includes compression table in tier 2+ skills', () => {
-    // Root is tier 1 (no completeness). Check tier 2+ skill.
+  test('Completeness Principle keeps compact scoring guidance in tier 2+ skills', () => {
     const content = fs.readFileSync(path.join(ROOT, 'cso', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('CC+gstack');
-    expect(content).toContain('Compression');
+    expect(content).toContain('Completeness: X/10');
+    expect(content).toContain('10 = all edge cases');
+    expect(content).toContain('Note: options differ in kind, not coverage');
+    expect(content).toContain('Do not fabricate scores');
   });
 });
 
@@ -1041,7 +1016,7 @@ describe('Test Bootstrap ({{TEST_BOOTSTRAP}}) integration', () => {
   test('TEST_BOOTSTRAP appears in ship/SKILL.md', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
     expect(content).toContain('Test Framework Bootstrap');
-    expect(content).toContain('Step 2.5');
+    expect(content).toContain('Step 4');
   });
 
   test('TEST_BOOTSTRAP appears in design-review/SKILL.md', () => {
@@ -1136,10 +1111,12 @@ describe('Phase 8e.5 regression test generation', () => {
 // --- Step 3.4 coverage audit validation ---
 
 describe('Step 3.4 test coverage audit', () => {
-  test('ship/SKILL.md contains Step 3.4', () => {
+  test('ship/SKILL.md contains Step 7', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Step 3.4: Test Coverage Audit');
-    expect(content).toContain('CODE PATH COVERAGE');
+    expect(content).toContain('Step 7: Test Coverage Audit');
+    // The coverage diagram collapses code-path and user-flow counts onto one
+    // summary line. Verify that summary is present (labels are stable).
+    expect(content).toContain('Code paths:');
   });
 
   test('Step 3.4 includes quality scoring rubric', () => {
@@ -1163,7 +1140,7 @@ describe('Step 3.4 test coverage audit', () => {
 
   test('ship rules include test generation rule', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Step 3.4 generates coverage tests');
+    expect(content).toContain('Step 7 generates coverage tests');
     expect(content).toContain('Never commit failing tests');
   });
 
@@ -1189,11 +1166,61 @@ describe('Step 3.4 test coverage audit', () => {
     expect(content).toContain('Empty/zero/boundary states');
   });
 
-  test('Step 3.4 diagram includes USER FLOW COVERAGE section', () => {
+  test('Step 3.4 diagram includes user-flow coverage summary', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('USER FLOW COVERAGE');
+    // The diagram was compressed from separate CODE PATH COVERAGE / USER FLOW
+    // COVERAGE section headers into a single summary line. Assert on the
+    // labels that still appear on that summary line.
     expect(content).toContain('Code paths:');
     expect(content).toContain('User flows:');
+  });
+});
+
+// --- Ship step numbering regression guard ---
+
+describe('ship step numbering', () => {
+  // Allowed sub-steps that are resolver-generated and intentionally nested:
+  // 8.1 (Plan Verification), 8.2 (Scope Drift), 9.1 (Review Army), 9.2 (Findings Merge),
+  // 9.3 (Cross-review dedup), 15.0 (WIP squash — continuous checkpoint), 15.1 (Bisectable commits).
+  const ALLOWED_SUBSTEPS = new Set(['8.1', '8.2', '9.1', '9.2', '9.3', '15.0', '15.1']);
+
+  test('ship/SKILL.md.tmpl contains no unexpected fractional step numbers', () => {
+    const tmpl = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md.tmpl'), 'utf-8');
+    // Match "Step X.Y" where X.Y is a decimal step reference (e.g., "Step 3.47", "Step 8.1")
+    const matches = Array.from(tmpl.matchAll(/Step (\d+\.\d+)/g));
+    const violations = matches
+      .map((m) => m[1])
+      .filter((n) => !ALLOWED_SUBSTEPS.has(n));
+    if (violations.length > 0) {
+      const unique = Array.from(new Set(violations)).sort();
+      throw new Error(
+        `ship/SKILL.md.tmpl contains fractional step numbers that are not in the allowed sub-step list.\n` +
+          `  Found: ${unique.join(', ')}\n` +
+          `  Allowed sub-steps: ${Array.from(ALLOWED_SUBSTEPS).sort().join(', ')}\n` +
+          `  Fix: use clean integer step numbers (1-20), or add to ALLOWED_SUBSTEPS if intentional.`
+      );
+    }
+  });
+
+  test('ship/SKILL.md main headings use clean integer step numbers', () => {
+    const skill = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
+    // Headings like "## Step 7: Test Coverage Audit" — NOT sub-steps like "## Step 8.1:"
+    const headings = Array.from(skill.matchAll(/^## Step (\d+(?:\.\d+)?):/gm)).map(
+      (m) => m[1]
+    );
+    const fractional = headings.filter((n) => n.includes('.'));
+    const unexpected = fractional.filter((n) => !ALLOWED_SUBSTEPS.has(n));
+    expect(unexpected).toEqual([]);
+  });
+
+  test('review/SKILL.md step numbers unchanged (regression guard for resolver conditionals)', () => {
+    const skill = fs.readFileSync(path.join(ROOT, 'review', 'SKILL.md'), 'utf-8');
+    // /review uses its own fractional numbering: 1.5, 2.5, 4.5, 5.5, 5.6, 5.7, 5.8
+    // If the ship-side renumber accidentally touched the review-side of resolver conditionals,
+    // these would vanish. This test catches that.
+    expect(skill).toContain('## Step 1.5: Scope Drift Detection');
+    expect(skill).toContain('## Step 4.5: Review Army');
+    expect(skill).toContain('## Step 5.7: Adversarial review');
   });
 });
 
@@ -1270,6 +1297,16 @@ describe('Codex skill', () => {
     expect(content).toContain('codex exec resume');
   });
 
+  test('codex/SKILL.md resume command only uses resume-supported flags', () => {
+    const content = fs.readFileSync(path.join(ROOT, 'codex', 'SKILL.md'), 'utf-8');
+    const match = content.match(/codex exec resume[^\n]+/);
+    expect(match).not.toBeNull();
+    const resumeCommand = match![0];
+    expect(resumeCommand).not.toContain(' -C ');
+    expect(resumeCommand).not.toContain(' -s read-only');
+    expect(resumeCommand).toContain("-c 'sandbox_mode=\"read-only\"'");
+  });
+
   test('codex/SKILL.md contains cost tracking', () => {
     const content = fs.readFileSync(path.join(ROOT, 'codex', 'SKILL.md'), 'utf-8');
     expect(content).toContain('tokens used');
@@ -1305,38 +1342,60 @@ describe('Codex skill', () => {
     expect(content).toContain('mktemp');
   });
 
-  test('adversarial review in /review auto-scales by diff size', () => {
+  test('codex JSON stream parser uses portable Python discovery', () => {
+    const files = ['codex/SKILL.md.tmpl', 'codex/SKILL.md'];
+
+    for (const rel of files) {
+      const content = fs.readFileSync(path.join(ROOT, rel), 'utf-8');
+      expect(content).toContain('PYTHON_CMD=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)');
+      expect(content).toContain('PYTHONUNBUFFERED=1 "$PYTHON_CMD" -u -c');
+      expect(content).not.toContain('PYTHONUNBUFFERED=1 python3 -u -c');
+    }
+  });
+
+  test('adversarial review in /review always runs both passes', () => {
     const content = fs.readFileSync(path.join(ROOT, 'review', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Adversarial review (auto-scaled)');
-    // Diff size thresholds
-    expect(content).toContain('< 50');
-    expect(content).toContain('50–199');
-    expect(content).toContain('200+');
-    // All three tiers present
-    expect(content).toContain('Small');
-    expect(content).toContain('Medium tier');
-    expect(content).toContain('Large tier');
+    expect(content).toContain('Adversarial review (always-on)');
+    // Always-on: both Claude and Codex adversarial
+    expect(content).toContain('Claude adversarial subagent (always runs)');
+    expect(content).toContain('Codex adversarial challenge (always runs when available)');
     // Claude adversarial subagent dispatch
     expect(content).toContain('Agent tool');
     expect(content).toContain('FIXABLE');
     expect(content).toContain('INVESTIGATE');
-    // Codex fallback logic
+    // Codex availability check
     expect(content).toContain('CODEX_NOT_AVAILABLE');
-    expect(content).toContain('fall back to the Claude adversarial subagent');
-    // Review log uses new skill name
+    // OLD_CFG only gates Codex, not Claude
+    expect(content).toContain('skip Codex passes only');
+    // Review log
     expect(content).toContain('adversarial-review');
     expect(content).toContain('reasoning_effort="high"');
     expect(content).toContain('ADVERSARIAL REVIEW SYNTHESIS');
+    // Large diff structured review still gated
+    expect(content).toContain('Codex structured review (large diffs only');
+    expect(content).toContain('200');
   });
 
-  test('adversarial review in /ship auto-scales by diff size', () => {
+  test('adversarial review in /ship always runs both passes', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
-    expect(content).toContain('Adversarial review (auto-scaled)');
-    expect(content).toContain('< 50');
-    expect(content).toContain('200+');
+    expect(content).toContain('Adversarial review (always-on)');
     expect(content).toContain('adversarial-review');
     expect(content).toContain('reasoning_effort="high"');
     expect(content).toContain('Investigate and fix');
+    expect(content).toContain('Claude adversarial subagent (always runs)');
+  });
+
+  test('scope drift detection in /review and /ship', () => {
+    const reviewContent = fs.readFileSync(path.join(ROOT, 'review', 'SKILL.md'), 'utf-8');
+    const shipContent = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
+    // Both should contain scope drift from the shared resolver
+    for (const content of [reviewContent, shipContent]) {
+      expect(content).toContain('Scope Check:');
+      expect(content).toContain('DRIFT DETECTED');
+      expect(content).toContain('SCOPE CREEP');
+      expect(content).toContain('MISSING REQUIREMENTS');
+      expect(content).toContain('stated intent');
+    }
   });
 
   test('codex-host ship/review do NOT contain adversarial review step', () => {
@@ -1409,15 +1468,116 @@ describe('Skill trigger phrases', () => {
   ];
 
   for (const skill of SKILLS_REQUIRING_PROACTIVE) {
-    test(`${skill}/SKILL.md has "Proactively suggest" phrase`, () => {
+    test(`${skill}/SKILL.md has proactive routing phrase`, () => {
       const skillPath = path.join(ROOT, skill, 'SKILL.md');
       if (!fs.existsSync(skillPath)) return;
       const content = fs.readFileSync(skillPath, 'utf-8');
       const frontmatterEnd = content.indexOf('---', 4);
       const frontmatter = content.slice(0, frontmatterEnd);
-      expect(frontmatter).toMatch(/Proactively suggest/i);
+      expect(frontmatter).toMatch(/Proactively (suggest|invoke)/i);
     });
   }
+});
+
+// ─── Private-path leak detector ──────────────────────────────
+//
+// Catches accidental references to maintainer-private files in skill output.
+// Adapted from the McGluut fork's skill-contract-audit.ts (we don't take the
+// whole script — these are the unique checks not already covered by
+// test/gen-skill-docs.test.ts:1668-2074 .claude/skills leakage tests).
+
+describe('Private-path leak detection', () => {
+  const PRIVATE_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+    { pattern: /coordination-board\.md/i, label: 'coordination-board.md' },
+    { pattern: /SEEKING_LOG\.md/, label: 'SEEKING_LOG.md' },
+    { pattern: /RATIONAL_SUBJECT\.md/, label: 'RATIONAL_SUBJECT.md' },
+    { pattern: /VALUE_SIGNAL_LOOP\.md/, label: 'VALUE_SIGNAL_LOOP.md' },
+    { pattern: /C:\\\\LLM Playground\\\\go/i, label: 'C:\\LLM Playground\\go' },
+  ];
+
+  // Walk every SKILL.md and SKILL.md.tmpl in the repo (excluding node_modules,
+  // generated host outputs, and .git).
+  function discoverSkillSurface(): string[] {
+    const results: string[] = [];
+    function walk(dir: string) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') && entry.name !== '.agents') continue;
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.name === 'SKILL.md' || entry.name === 'SKILL.md.tmpl') {
+          results.push(full);
+        }
+      }
+    }
+    walk(ROOT);
+    return results;
+  }
+
+  test('no SKILL.md or SKILL.md.tmpl references private maintainer files', () => {
+    const files = discoverSkillSurface();
+    expect(files.length).toBeGreaterThan(0);
+    const leaks: string[] = [];
+    for (const file of files) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const { pattern, label } of PRIVATE_PATTERNS) {
+        if (pattern.test(content)) {
+          leaks.push(`${path.relative(ROOT, file)} mentions ${label}`);
+        }
+      }
+    }
+    expect(leaks).toEqual([]);
+  });
+});
+
+// ─── Doc-inventory cross-check ───────────────────────────────
+//
+// Every skill directory (with a SKILL.md.tmpl) must appear in both AGENTS.md
+// and docs/skills.md. Catches the inventory drift codex flagged (/debug
+// → /investigate; missing /autoplan, /context-save, /plan-devex-review, etc.).
+
+describe('Doc inventory cross-check', () => {
+  // Skills that don't get user-invocation lines in agent-facing docs.
+  // - 'qa-only' is a sub-mode of /qa with shared docs.
+  // - The 5 listed below are infrastructure (model overlays, shipped binary,
+  //   hosts) that don't show up in the user-facing skill table.
+  const DOC_INVENTORY_EXCLUDE = new Set([
+    // Infra / non-skills
+    'agents', 'claude', 'connect-chrome', 'contrib', 'hosts',
+    'lib', 'model-overlays', 'openclaw', 'supabase', 'scripts', 'test',
+  ]);
+
+  function discoverSkillDirs(): string[] {
+    const dirs: string[] = [];
+    for (const entry of fs.readdirSync(ROOT, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.')) continue;
+      if (DOC_INVENTORY_EXCLUDE.has(entry.name)) continue;
+      const tmplPath = path.join(ROOT, entry.name, 'SKILL.md.tmpl');
+      if (fs.existsSync(tmplPath)) dirs.push(entry.name);
+    }
+    return dirs.sort();
+  }
+
+  test('every skill is documented in AGENTS.md', () => {
+    const agents = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf-8');
+    const missing: string[] = [];
+    for (const skill of discoverSkillDirs()) {
+      // Match `/skill-name` as a token boundary.
+      if (!new RegExp(`/${skill}\\b`).test(agents)) missing.push(skill);
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test('every skill is documented in docs/skills.md', () => {
+    const docs = fs.readFileSync(path.join(ROOT, 'docs', 'skills.md'), 'utf-8');
+    const missing: string[] = [];
+    for (const skill of discoverSkillDirs()) {
+      if (!new RegExp(`/${skill}\\b`).test(docs)) missing.push(skill);
+    }
+    expect(missing).toEqual([]);
+  });
 });
 
 // ─── Codex Skill Validation ──────────────────────────────────
@@ -1430,12 +1590,16 @@ describe('Codex skill validation', () => {
     cwd: ROOT, stdout: 'pipe', stderr: 'pipe',
   });
 
-  // Discover all Claude skills with templates (except /codex which is Claude-only)
+  // Discover all shared skills with templates.
+  // Host-exclusive outside-voice skills are intentionally omitted here:
+  // - /codex is Claude-only
+  // - /claude is external-host-only
   const CLAUDE_SKILLS_WITH_TEMPLATES = (() => {
     const skills: string[] = [];
     for (const entry of fs.readdirSync(ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       if (entry.name === 'codex') continue; // Claude-only skill
+      if (entry.name === 'claude') continue; // External-host-only skill
       if (fs.existsSync(path.join(ROOT, entry.name, 'SKILL.md.tmpl'))) {
         skills.push(entry.name);
       }
@@ -1464,6 +1628,13 @@ describe('Codex skill validation', () => {
     expect(fs.existsSync(path.join(ROOT, 'codex', 'SKILL.md'))).toBe(true);
     // Codex variant must NOT exist
     expect(fs.existsSync(path.join(AGENTS_DIR, 'gstack-codex', 'SKILL.md'))).toBe(false);
+  });
+
+  test('/claude skill is external-host-only — no Claude-host variant', () => {
+    // Claude host should not get an outside-voice skill that shells into Claude.
+    expect(fs.existsSync(path.join(ROOT, 'claude', 'SKILL.md'))).toBe(false);
+    // Codex/external hosts should get the generated wrapper.
+    expect(fs.existsSync(path.join(AGENTS_DIR, 'gstack-claude', 'SKILL.md'))).toBe(true);
   });
 
   test('Codex skill names follow gstack-{name} convention', () => {
@@ -1545,5 +1716,171 @@ describe('Test failure triage in ship skill', () => {
   test('ship/SKILL.md uses in-branch language for stop condition', () => {
     const content = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
     expect(content).toContain('In-branch test failures');
+  });
+});
+
+describe('no compiled binaries in git', () => {
+  // Tracked files enumerated once and reused by both assertions. git ls-files -z
+  // + split is ~ms; the previous xargs-per-file shell loops blew past 5s on CI.
+  const trackedFiles: string[] = require('child_process')
+    .execSync('git ls-files -z', { cwd: ROOT, encoding: 'utf-8' })
+    .split('\0')
+    .filter(Boolean);
+
+  test('git tracks no Mach-O or ELF binaries', () => {
+    // Only mode 100755 (executable) files can be binaries we care about. Pre-filter
+    // via git ls-files -s to avoid running `file` on every text file.
+    const lsOut: string = require('child_process').execSync('git ls-files -s', {
+      cwd: ROOT,
+      encoding: 'utf-8',
+    });
+    const executableFiles = lsOut
+      .split('\n')
+      .filter(Boolean)
+      .map((line: string) => {
+        const parts = line.split(/\s+/);
+        return { mode: parts[0], file: line.split('\t')[1] };
+      })
+      .filter((e: { mode: string; file: string }) => e.mode === '100755')
+      .map((e: { mode: string; file: string }) => e.file);
+
+    if (executableFiles.length === 0) return;
+
+    // Batch-invoke `file --mime-type` across all executable files at once.
+    const result: string = require('child_process')
+      .execSync(`file --mime-type -- ${executableFiles.map((f: string) => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`, {
+        cwd: ROOT,
+        encoding: 'utf-8',
+      })
+      .trim();
+
+    const binaries = result
+      .split('\n')
+      .filter((l: string) =>
+        /application\/(x-mach-binary|x-executable|x-pie-executable|x-sharedlib)/.test(l)
+      )
+      .map((l: string) => l.split(':')[0].trim());
+
+    expect(binaries).toEqual([]);
+  });
+
+  test('warns about tracked files larger than 2MB', () => {
+    // Large fixtures can be legitimate test infrastructure. Keep visibility on
+    // repository size without blocking those fixtures from living in git.
+    // Known-good fixtures are exempted from the warning to keep CI logs clean.
+    const MAX_BYTES = 2 * 1024 * 1024;
+    const knownLargeFixtures = new Set([
+      // Deterministic replay fixture for BrowseSafe-Bench. The live bench is
+      // expensive; this file is intentionally committed so the gate is free.
+      'browse/test/fixtures/security-bench-haiku-responses.json',
+    ]);
+    const oversized = trackedFiles.flatMap((f: string) => {
+      if (knownLargeFixtures.has(f)) return [];
+      const full = path.join(ROOT, f);
+      try {
+        const size = fs.statSync(full).size;
+        return size > MAX_BYTES ? [{ file: f, size }] : [];
+      } catch {
+        return [];
+      }
+    });
+
+    if (oversized.length > 0) {
+      const formatted = oversized
+        .map(({ file, size }: { file: string; size: number }) => {
+          const mib = (size / (1024 * 1024)).toFixed(1);
+          return `${file} (${mib} MiB)`;
+        })
+        .join(', ');
+      console.warn(`[size-warning] tracked files over 2 MiB: ${formatted}`);
+    }
+
+    expect(Array.isArray(oversized)).toBe(true);
+  });
+});
+
+// `sidebar agent (#584)` describe block was here. sidebar-agent.ts and
+// the entire chat-queue path were ripped in favor of the interactive
+// claude PTY (terminal-agent.ts); these assertions had no target file.
+// Terminal-pane invariants are covered by browse/test/sidebar-tabs.test.ts
+// and browse/test/terminal-agent.test.ts.
+
+// ─── Browser-skills validation ──────────────────────────────────
+//
+// Browser-skills are bundled in <gstack-root>/browser-skills/<name>/. Each
+// must have a SKILL.md whose frontmatter satisfies the contract enforced by
+// browse/src/browser-skills.ts:parseSkillFile (host required, args + triggers
+// parseable as the right shape). This test catches malformed bundled skills
+// at CI time, before they ship.
+
+describe('Bundled browser-skills frontmatter contract', () => {
+  const browserSkillsRoot = path.join(ROOT, 'browser-skills');
+
+  function listBundledSkillDirs(): string[] {
+    if (!fs.existsSync(browserSkillsRoot)) return [];
+    return fs.readdirSync(browserSkillsRoot)
+      .filter(name => !name.startsWith('.'))
+      .map(name => path.join(browserSkillsRoot, name))
+      .filter(dir => {
+        try { return fs.statSync(dir).isDirectory(); } catch { return false; }
+      });
+  }
+
+  test('each bundled skill has a SKILL.md', () => {
+    for (const dir of listBundledSkillDirs()) {
+      const skillFile = path.join(dir, 'SKILL.md');
+      expect(fs.existsSync(skillFile)).toBe(true);
+    }
+  });
+
+  test('each bundled skill SKILL.md frontmatter parses with required fields', async () => {
+    const { parseSkillFile } = await import('../browse/src/browser-skills');
+    for (const dir of listBundledSkillDirs()) {
+      const name = path.basename(dir);
+      const content = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf-8');
+      // parseSkillFile throws on missing required fields; we just want to
+      // make sure none of our shipped skills tripwire it.
+      const { frontmatter } = parseSkillFile(content, { skillName: name });
+      expect(frontmatter.name).toBe(name);
+      expect(typeof frontmatter.host).toBe('string');
+      expect(frontmatter.host.length).toBeGreaterThan(0);
+      expect(Array.isArray(frontmatter.triggers)).toBe(true);
+      expect(Array.isArray(frontmatter.args)).toBe(true);
+    }
+  });
+
+  test('each bundled skill has a script.ts', () => {
+    for (const dir of listBundledSkillDirs()) {
+      expect(fs.existsSync(path.join(dir, 'script.ts'))).toBe(true);
+    }
+  });
+
+  test('each bundled skill ships a sibling SDK at _lib/browse-client.ts', () => {
+    for (const dir of listBundledSkillDirs()) {
+      expect(fs.existsSync(path.join(dir, '_lib', 'browse-client.ts'))).toBe(true);
+    }
+  });
+
+  test('each bundled skill has a script.test.ts', () => {
+    for (const dir of listBundledSkillDirs()) {
+      expect(fs.existsSync(path.join(dir, 'script.test.ts'))).toBe(true);
+    }
+  });
+
+  test("each bundled skill's _lib/browse-client.ts matches the canonical SDK", () => {
+    // If the canonical SDK changes, the bundled copy must be updated. This
+    // test enforces that — the _lib copy should be byte-identical.
+    const canonical = fs.readFileSync(path.join(ROOT, 'browse', 'src', 'browse-client.ts'), 'utf-8');
+    for (const dir of listBundledSkillDirs()) {
+      const sibling = fs.readFileSync(path.join(dir, '_lib', 'browse-client.ts'), 'utf-8');
+      expect(sibling).toBe(canonical);
+    }
+  });
+
+  test('script.ts imports browse from ./_lib/browse-client', () => {
+    for (const dir of listBundledSkillDirs()) {
+      const content = fs.readFileSync(path.join(dir, 'script.ts'), 'utf-8');
+      expect(content).toMatch(/from\s+['"]\.\/_lib\/browse-client['"]/);
+    }
   });
 });

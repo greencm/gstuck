@@ -1,9 +1,13 @@
 /**
  * gstack browse — Side Panel
  *
- * Chat tab: two-way messaging with Claude Code via file queue.
- * Debug tabs: activity feed (SSE) + refs (REST).
- * Polls /sidebar-chat for new messages every 1s.
+ * Terminal pane (default): live claude PTY via xterm.js, driven by
+ * sidepanel-terminal.js. The chat queue + sidebar-agent.ts were ripped
+ * in favor of the interactive REPL — no more one-shot claude -p.
+ *
+ * Debug tabs (behind the `debug` toggle): activity feed (SSE) + refs +
+ * inspector. Quick-actions toolbar (Cleanup / Screenshot / Cookies)
+ * lives at the top of the Terminal pane.
  */
 
 const NAV_COMMANDS = new Set(['goto', 'back', 'forward', 'reload']);
@@ -14,8 +18,6 @@ let lastId = 0;
 let eventSource = null;
 let serverUrl = null;
 let serverToken = null;
-let chatLineCount = 0;
-let chatPollInterval = null;
 let connState = 'disconnected'; // disconnected | connected | reconnecting | dead
 let reconnectAttempts = 0;
 let reconnectTimer = null;
@@ -80,266 +82,31 @@ function startReconnect() {
   }, 2000);
 }
 
-// ─── Chat ───────────────────────────────────────────────────────
 
-const chatMessages = document.getElementById('chat-messages');
-const commandInput = document.getElementById('command-input');
-const sendBtn = document.getElementById('send-btn');
-const commandHistory = [];
-let historyIndex = -1;
+// ─── Chat path ripped ────────────────────────────────────────────
+// Chat queue + sendMessage + pollChat + switchChatTab + browser-tabs
+// strip + security banner all lived here. Replaced by the interactive
+// claude PTY in sidepanel-terminal.js (and terminal-agent.ts on the
+// server side).
 
-function formatChatTime(ts) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-}
-
-// Current streaming state
-let agentContainer = null; // The container for the current agent response
-let agentTextEl = null;    // The text accumulator element
-let agentText = '';        // Accumulated text
-
-function addChatEntry(entry) {
-  // Remove welcome message on first real message
-  const welcome = chatMessages.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
-
-  // User messages → chat bubble
-  if (entry.role === 'user') {
-    const bubble = document.createElement('div');
-    bubble.className = 'chat-bubble user';
-    bubble.innerHTML = `${escapeHtml(entry.message)}<span class="chat-time">${formatChatTime(entry.ts)}</span>`;
-    chatMessages.appendChild(bubble);
-    bubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return;
-  }
-
-  // Legacy assistant messages (from /sidebar-response)
-  if (entry.role === 'assistant') {
-    const bubble = document.createElement('div');
-    bubble.className = 'chat-bubble assistant';
-    let content = escapeHtml(entry.message);
-    content = content.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>');
-    content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    content = content.replace(/\n/g, '<br>');
-    bubble.innerHTML = `${content}<span class="chat-time">${formatChatTime(entry.ts)}</span>`;
-    chatMessages.appendChild(bubble);
-    bubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return;
-  }
-
-  // Agent streaming events
-  if (entry.role === 'agent') {
-    handleAgentEvent(entry);
-    return;
-  }
-}
-
-function handleAgentEvent(entry) {
-  if (entry.type === 'agent_start') {
-    // Create a new agent response container
-    agentText = '';
-    agentContainer = document.createElement('div');
-    agentContainer.className = 'agent-response';
-    agentTextEl = null;
-    chatMessages.appendChild(agentContainer);
-
-    // Add thinking indicator
-    const thinking = document.createElement('div');
-    thinking.className = 'agent-thinking';
-    thinking.id = 'agent-thinking';
-    thinking.innerHTML = '<span class="thinking-dot"></span><span class="thinking-dot"></span><span class="thinking-dot"></span>';
-    agentContainer.appendChild(thinking);
-    agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return;
-  }
-
-  if (entry.type === 'agent_done') {
-    // Remove thinking indicator
-    const thinking = document.getElementById('agent-thinking');
-    if (thinking) thinking.remove();
-    // Add timestamp
-    if (agentContainer) {
-      const ts = document.createElement('span');
-      ts.className = 'chat-time';
-      ts.textContent = formatChatTime(entry.ts);
-      agentContainer.appendChild(ts);
-    }
-    agentContainer = null;
-    agentTextEl = null;
-    return;
-  }
-
-  if (entry.type === 'agent_error') {
-    const thinking = document.getElementById('agent-thinking');
-    if (thinking) thinking.remove();
-    if (!agentContainer) {
-      agentContainer = document.createElement('div');
-      agentContainer.className = 'agent-response';
-      chatMessages.appendChild(agentContainer);
-    }
-    const err = document.createElement('div');
-    err.className = 'agent-error';
-    err.textContent = entry.error || 'Unknown error';
-    agentContainer.appendChild(err);
-    agentContainer = null;
-    return;
-  }
-
-  if (!agentContainer) {
-    agentContainer = document.createElement('div');
-    agentContainer.className = 'agent-response';
-    chatMessages.appendChild(agentContainer);
-  }
-
-  // Remove thinking indicator on first real content
-  const thinking = document.getElementById('agent-thinking');
-  if (thinking) thinking.remove();
-
-  if (entry.type === 'tool_use') {
-    const toolEl = document.createElement('div');
-    toolEl.className = 'agent-tool';
-    const toolName = entry.tool || 'Tool';
-    const toolInput = entry.input || '';
-    toolEl.innerHTML = `<span class="tool-name">${escapeHtml(toolName)}</span> <span class="tool-input">${escapeHtml(toolInput)}</span>`;
-    agentContainer.appendChild(toolEl);
-    agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return;
-  }
-
-  if (entry.type === 'text' || entry.type === 'result') {
-    // Full text replacement
-    agentText = entry.text || '';
-    if (!agentTextEl) {
-      agentTextEl = document.createElement('div');
-      agentTextEl.className = 'agent-text';
-      agentContainer.appendChild(agentTextEl);
-    }
-    let content = escapeHtml(agentText);
-    content = content.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>');
-    content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    content = content.replace(/\n/g, '<br>');
-    agentTextEl.innerHTML = content;
-    agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return;
-  }
-
-  if (entry.type === 'text_delta') {
-    // Incremental text append
-    agentText += entry.text || '';
-    if (!agentTextEl) {
-      agentTextEl = document.createElement('div');
-      agentTextEl.className = 'agent-text';
-      agentContainer.appendChild(agentTextEl);
-    }
-    let content = escapeHtml(agentText);
-    content = content.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>');
-    content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    content = content.replace(/\n/g, '<br>');
-    agentTextEl.innerHTML = content;
-    agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    return;
-  }
-}
-
-async function sendMessage() {
-  const msg = commandInput.value.trim();
-  if (!msg) return;
-
-  commandHistory.push(msg);
-  historyIndex = commandHistory.length;
-  commandInput.value = '';
-  commandInput.disabled = true;
-  sendBtn.disabled = true;
-
-  const result = await new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'sidebar-command', message: msg }, resolve);
-  });
-
-  commandInput.disabled = false;
-  sendBtn.disabled = false;
-  commandInput.focus();
-
-  if (result?.ok) {
-    // Immediately poll to show the user's own message
-    pollChat();
-  } else {
-    commandInput.classList.add('error');
-    commandInput.placeholder = result?.error || 'Failed to send';
-    setTimeout(() => {
-      commandInput.classList.remove('error');
-      commandInput.placeholder = 'Message Claude Code...';
-    }, 2000);
-  }
-}
-
-commandInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); sendMessage(); }
-  if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    if (historyIndex > 0) { historyIndex--; commandInput.value = commandHistory[historyIndex]; }
-  }
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    if (historyIndex < commandHistory.length - 1) { historyIndex++; commandInput.value = commandHistory[historyIndex]; }
-    else { historyIndex = commandHistory.length; commandInput.value = ''; }
-  }
+// ─── Reload Sidebar ─────────────────────────────────────────────
+document.getElementById('reload-sidebar').addEventListener('click', () => {
+  location.reload();
 });
 
-sendBtn.addEventListener('click', sendMessage);
-
-// Poll for new chat messages
-let initialLoadDone = false;
-
-async function pollChat() {
-  if (!serverUrl || !serverToken) return;
-  try {
-    const resp = await fetch(`${serverUrl}/sidebar-chat?after=${chatLineCount}`, {
-      headers: authHeaders(),
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!resp.ok) return;
-    const data = await resp.json();
-
-    // First successful poll — hide loading spinner
-    if (!initialLoadDone) {
-      initialLoadDone = true;
-      const loading = document.getElementById('chat-loading');
-      const welcome = document.getElementById('chat-welcome');
-      if (loading) loading.style.display = 'none';
-      // Show welcome only if no chat history
-      if (data.total === 0 && welcome) welcome.style.display = '';
-    }
-
-    if (data.entries && data.entries.length > 0) {
-      // Hide welcome on first real entry
-      const welcome = document.getElementById('chat-welcome');
-      if (welcome) welcome.style.display = 'none';
-      for (const entry of data.entries) {
-        addChatEntry(entry);
-      }
-      chatLineCount = data.total;
-    }
-  } catch {}
-}
-
-// ─── Clear Chat ─────────────────────────────────────────────────
-
-document.getElementById('clear-chat').addEventListener('click', async () => {
+// ─── Copy Cookies ───────────────────────────────────────────────
+document.getElementById('chat-cookies-btn').addEventListener('click', async () => {
   if (!serverUrl) return;
+  // Navigate the browser to the cookie picker page hosted by the browse server
   try {
-    await fetch(`${serverUrl}/sidebar-chat/clear`, { method: 'POST', headers: authHeaders() });
-  } catch {}
-  // Reset local state
-  chatLineCount = 0;
-  agentContainer = null;
-  agentTextEl = null;
-  agentText = '';
-  chatMessages.innerHTML = `
-    <div class="chat-welcome" id="chat-welcome">
-      <div class="chat-welcome-icon">G</div>
-      <p>Send a message to Claude Code.</p>
-      <p class="muted">Your agent will see it and act on it.</p>
-    </div>`;
+    await fetch(`${serverUrl}/command`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ command: 'goto', args: [`${serverUrl}/cookie-picker`] }),
+    });
+  } catch (err) {
+    console.error('[gstack sidebar] Failed to open cookie picker:', err.message);
+  }
 });
 
 // ─── Debug Tabs ─────────────────────────────────────────────────
@@ -349,24 +116,29 @@ const debugTabs = document.getElementById('debug-tabs');
 const closeDebug = document.getElementById('close-debug');
 let debugOpen = false;
 
+// The Terminal pane is the only primary surface; Activity / Refs / Inspector
+// are debug overlays behind the `debug` toggle. Closing debug returns to
+// the Terminal pane, which is always present.
+const PRIMARY_PANE_ID = 'tab-terminal';
+
+function showPrimaryPane() {
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById(PRIMARY_PANE_ID).classList.add('active');
+  document.querySelectorAll('.debug-tabs .tab').forEach(t => t.classList.remove('active'));
+}
+
 debugToggle.addEventListener('click', () => {
   debugOpen = !debugOpen;
   debugToggle.classList.toggle('active', debugOpen);
   debugTabs.style.display = debugOpen ? 'flex' : 'none';
-  if (!debugOpen) {
-    // Close debug panels, show chat
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.getElementById('tab-chat').classList.add('active');
-    document.querySelectorAll('.debug-tabs .tab').forEach(t => t.classList.remove('active'));
-  }
+  if (!debugOpen) showPrimaryPane();
 });
 
 closeDebug.addEventListener('click', () => {
   debugOpen = false;
   debugToggle.classList.remove('active');
   debugTabs.style.display = 'none';
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  document.getElementById('tab-chat').classList.add('active');
+  showPrimaryPane();
 });
 
 document.querySelectorAll('.debug-tabs .tab:not(.close-debug)').forEach(tab => {
@@ -413,7 +185,7 @@ function createEntryElement(entry) {
   div.innerHTML = `
     <div class="entry-header">
       <span class="entry-time">${formatTime(entry.timestamp)}</span>
-      <span class="entry-command">${entry.command || entry.type}</span>
+      <span class="entry-command">${escapeHtml(entry.command || entry.type)}</span>
     </div>
     ${argsText ? `<div class="entry-args">${escapeHtml(argsText)}</div>` : ''}
     ${entry.type === 'command_end' ? `
@@ -460,20 +232,50 @@ function addEntry(entry) {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  // DOM text-node serialization escapes &, <, > but NOT " or '. Call sites
+  // that interpolate escapeHtml output inside an attribute value (title="...",
+  // data-x="...") need those escaped too or an attacker-controlled value can
+  // break out of the attribute. Add both manually.
+  return div.innerHTML
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ─── SSE Connection ─────────────────────────────────────────────
 
-function connectSSE() {
+// Fetch a view-only SSE session cookie before opening EventSource.
+// EventSource can't send Authorization headers, and putting the root
+// token in the URL (the old ?token= path) leaks it to logs, referer
+// headers, and browser history. POST /sse-session issues an HttpOnly
+// SameSite=Strict cookie scoped to SSE reads only; withCredentials:true
+// on EventSource makes the browser send it back.
+async function ensureSseSessionCookie() {
+  if (!serverUrl || !serverToken) return false;
+  try {
+    const resp = await fetch(`${serverUrl}/sse-session`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Authorization': `Bearer ${serverToken}` },
+    });
+    return resp.ok;
+  } catch (err) {
+    console.warn('[gstack sidebar] Failed to mint SSE session cookie:', err && err.message);
+    return false;
+  }
+}
+
+async function connectSSE() {
   if (!serverUrl) return;
   if (eventSource) { eventSource.close(); eventSource = null; }
 
+  await ensureSseSessionCookie();
   const url = `${serverUrl}/activity/stream?after=${lastId}`;
-  eventSource = new EventSource(url);
+  eventSource = new EventSource(url, { withCredentials: true });
 
   eventSource.addEventListener('activity', (e) => {
-    try { addEntry(JSON.parse(e.data)); } catch {}
+    try { addEntry(JSON.parse(e.data)); } catch (err) {
+      console.error('[gstack sidebar] Failed to parse activity event:', err.message);
+    }
   });
 
   eventSource.addEventListener('gap', (e) => {
@@ -484,7 +286,9 @@ function connectSSE() {
       banner.className = 'gap-banner';
       banner.textContent = `Missed ${data.availableFrom - data.gapFrom} events`;
       feed.appendChild(banner);
-    } catch {}
+    } catch (err) {
+      console.error('[gstack sidebar] Failed to parse gap event:', err.message);
+    }
   });
 }
 
@@ -493,7 +297,9 @@ function connectSSE() {
 async function fetchRefs() {
   if (!serverUrl) return;
   try {
-    const resp = await fetch(`${serverUrl}/refs`, { signal: AbortSignal.timeout(3000) });
+    const headers = {};
+    if (serverToken) headers['Authorization'] = `Bearer ${serverToken}`;
+    const resp = await fetch(`${serverUrl}/refs`, { signal: AbortSignal.timeout(3000), headers });
     if (!resp.ok) return;
     const data = await resp.json();
 
@@ -517,31 +323,547 @@ async function fetchRefs() {
       </div>
     `).join('');
     footer.textContent = `${data.refs.length} refs`;
-  } catch {}
+  } catch (err) {
+    console.error('[gstack sidebar] Failed to fetch refs:', err.message);
+  }
+}
+
+// ─── Inspector Tab ──────────────────────────────────────────────
+
+let inspectorPickerActive = false;
+let inspectorData = null; // last inspect result
+let inspectorModifications = []; // tracked style changes
+let inspectorSSE = null;
+
+// Inspector DOM refs
+const inspectorPickBtn = document.getElementById('inspector-pick-btn');
+const inspectorSelected = document.getElementById('inspector-selected');
+const inspectorModeBadge = document.getElementById('inspector-mode-badge');
+const inspectorEmpty = document.getElementById('inspector-empty');
+const inspectorLoading = document.getElementById('inspector-loading');
+const inspectorError = document.getElementById('inspector-error');
+const inspectorPanels = document.getElementById('inspector-panels');
+const inspectorBoxmodel = document.getElementById('inspector-boxmodel');
+const inspectorRules = document.getElementById('inspector-rules');
+const inspectorRuleCount = document.getElementById('inspector-rule-count');
+const inspectorComputed = document.getElementById('inspector-computed');
+const inspectorQuickedit = document.getElementById('inspector-quickedit');
+const inspectorSend = document.getElementById('inspector-send');
+const inspectorSendBtn = document.getElementById('inspector-send-btn');
+
+// Pick button
+inspectorPickBtn.addEventListener('click', () => {
+  if (inspectorPickerActive) {
+    inspectorPickerActive = false;
+    inspectorPickBtn.classList.remove('active');
+    chrome.runtime.sendMessage({ type: 'stopInspector' });
+  } else {
+    inspectorPickerActive = true;
+    inspectorPickBtn.classList.add('active');
+    inspectorShowLoading(false); // don't show loading yet, just activate
+    chrome.runtime.sendMessage({ type: 'startInspector' }, (result) => {
+      if (result?.error) {
+        inspectorPickerActive = false;
+        inspectorPickBtn.classList.remove('active');
+        inspectorShowError(result.error);
+      }
+    });
+  }
+});
+
+function inspectorShowEmpty() {
+  inspectorEmpty.style.display = '';
+  inspectorLoading.style.display = 'none';
+  inspectorError.style.display = 'none';
+  inspectorPanels.style.display = 'none';
+  inspectorSend.style.display = 'none';
+}
+
+function inspectorShowLoading(show) {
+  if (show) {
+    inspectorEmpty.style.display = 'none';
+    inspectorLoading.style.display = '';
+    inspectorError.style.display = 'none';
+    inspectorPanels.style.display = 'none';
+  } else {
+    inspectorLoading.style.display = 'none';
+  }
+}
+
+function inspectorShowError(message) {
+  inspectorEmpty.style.display = 'none';
+  inspectorLoading.style.display = 'none';
+  inspectorError.style.display = '';
+  inspectorError.textContent = message;
+  inspectorPanels.style.display = 'none';
+}
+
+function inspectorShowData(data) {
+  inspectorData = data;
+  inspectorModifications = [];
+  inspectorEmpty.style.display = 'none';
+  inspectorLoading.style.display = 'none';
+  inspectorError.style.display = 'none';
+  inspectorPanels.style.display = '';
+  inspectorSend.style.display = '';
+
+  // Update toolbar
+  const tag = data.tagName || '?';
+  const cls = data.classes && data.classes.length > 0 ? '.' + data.classes.join('.') : '';
+  const idStr = data.id ? '#' + data.id : '';
+  inspectorSelected.textContent = `<${tag}>${idStr}${cls}`;
+  inspectorSelected.title = data.selector;
+
+  // Mode badge
+  if (data.mode === 'basic') {
+    inspectorModeBadge.textContent = 'Basic mode';
+    inspectorModeBadge.style.display = '';
+    inspectorModeBadge.className = 'inspector-mode-badge basic';
+  } else if (data.mode === 'cdp') {
+    inspectorModeBadge.textContent = 'CDP';
+    inspectorModeBadge.style.display = '';
+    inspectorModeBadge.className = 'inspector-mode-badge cdp';
+  } else {
+    inspectorModeBadge.style.display = 'none';
+  }
+
+  // Render sections
+  renderBoxModel(data);
+  renderMatchedRules(data);
+  renderComputedStyles(data);
+  renderQuickEdit(data);
+  updateSendButton();
+}
+
+// ─── Box Model Rendering ────────────────────────────────────────
+
+function renderBoxModel(data) {
+  const box = data.basicData?.boxModel || data.boxModel;
+  if (!box) { inspectorBoxmodel.innerHTML = '<span class="inspector-no-data">No box model data</span>'; return; }
+
+  const m = box.margin || {};
+  const b = box.border || {};
+  const p = box.padding || {};
+  const c = box.content || {};
+
+  inspectorBoxmodel.innerHTML = `
+    <div class="boxmodel-margin">
+      <span class="boxmodel-label">margin</span>
+      <span class="boxmodel-value boxmodel-top">${fmtBoxVal(m.top)}</span>
+      <span class="boxmodel-value boxmodel-right">${fmtBoxVal(m.right)}</span>
+      <span class="boxmodel-value boxmodel-bottom">${fmtBoxVal(m.bottom)}</span>
+      <span class="boxmodel-value boxmodel-left">${fmtBoxVal(m.left)}</span>
+      <div class="boxmodel-border">
+        <span class="boxmodel-label">border</span>
+        <span class="boxmodel-value boxmodel-top">${fmtBoxVal(b.top)}</span>
+        <span class="boxmodel-value boxmodel-right">${fmtBoxVal(b.right)}</span>
+        <span class="boxmodel-value boxmodel-bottom">${fmtBoxVal(b.bottom)}</span>
+        <span class="boxmodel-value boxmodel-left">${fmtBoxVal(b.left)}</span>
+        <div class="boxmodel-padding">
+          <span class="boxmodel-label">padding</span>
+          <span class="boxmodel-value boxmodel-top">${fmtBoxVal(p.top)}</span>
+          <span class="boxmodel-value boxmodel-right">${fmtBoxVal(p.right)}</span>
+          <span class="boxmodel-value boxmodel-bottom">${fmtBoxVal(p.bottom)}</span>
+          <span class="boxmodel-value boxmodel-left">${fmtBoxVal(p.left)}</span>
+          <div class="boxmodel-content">
+            <span>${Math.round(c.width || 0)} x ${Math.round(c.height || 0)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function fmtBoxVal(v) {
+  if (v === undefined || v === null) return '-';
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (isNaN(n) || n === 0) return '0';
+  return Math.round(n * 10) / 10;
+}
+
+// ─── Matched Rules Rendering ────────────────────────────────────
+
+function renderMatchedRules(data) {
+  const rules = data.matchedRules || data.basicData?.matchedRules || [];
+  inspectorRuleCount.textContent = rules.length > 0 ? `(${rules.length})` : '';
+
+  if (rules.length === 0) {
+    inspectorRules.innerHTML = '<div class="inspector-no-data">No matched rules</div>';
+    return;
+  }
+
+  // Separate UA rules from author rules
+  const authorRules = [];
+  const uaRules = [];
+  for (const rule of rules) {
+    if (rule.origin === 'user-agent' || rule.isUA) {
+      uaRules.push(rule);
+    } else {
+      authorRules.push(rule);
+    }
+  }
+
+  let html = '';
+
+  // Author rules (expanded)
+  for (const rule of authorRules) {
+    html += renderRule(rule, false);
+  }
+
+  // UA rules (collapsed by default)
+  if (uaRules.length > 0) {
+    html += `
+      <div class="inspector-ua-rules">
+        <button class="inspector-ua-toggle collapsed" aria-expanded="false">
+          <span class="inspector-toggle-arrow">&#x25B6;</span>
+          User Agent (${uaRules.length})
+        </button>
+        <div class="inspector-ua-body collapsed">
+    `;
+    for (const rule of uaRules) {
+      html += renderRule(rule, true);
+    }
+    html += '</div></div>';
+  }
+
+  inspectorRules.innerHTML = html;
+
+  // Bind UA toggle
+  const uaToggle = inspectorRules.querySelector('.inspector-ua-toggle');
+  if (uaToggle) {
+    uaToggle.addEventListener('click', () => {
+      const body = inspectorRules.querySelector('.inspector-ua-body');
+      const isCollapsed = uaToggle.classList.contains('collapsed');
+      uaToggle.classList.toggle('collapsed', !isCollapsed);
+      uaToggle.setAttribute('aria-expanded', isCollapsed);
+      uaToggle.querySelector('.inspector-toggle-arrow').innerHTML = isCollapsed ? '&#x25BC;' : '&#x25B6;';
+      body.classList.toggle('collapsed', !isCollapsed);
+    });
+  }
+}
+
+function renderRule(rule, isUA) {
+  const selectorText = escapeHtml(rule.selector || '');
+  const truncatedSelector = selectorText.length > 35 ? selectorText.slice(0, 35) + '...' : selectorText;
+  const source = rule.source || '';
+  const sourceDisplay = source.includes('/') ? source.split('/').pop() : source;
+  const specificity = rule.specificity || '';
+
+  let propsHtml = '';
+  const props = rule.properties || [];
+  for (const prop of props) {
+    const overridden = prop.overridden ? ' overridden' : '';
+    const nameHtml = escapeHtml(prop.name);
+    const valText = escapeHtml(prop.value || '');
+    const truncatedVal = valText.length > 30 ? valText.slice(0, 30) + '...' : valText;
+    const priority = prop.priority === 'important' ? ' <span class="inspector-important">!important</span>' : '';
+    propsHtml += `<div class="inspector-prop${overridden}"><span class="inspector-prop-name">${nameHtml}</span>: <span class="inspector-prop-value" title="${valText}">${truncatedVal}</span>${priority};</div>`;
+  }
+
+  return `
+    <div class="inspector-rule" role="treeitem">
+      <div class="inspector-rule-header">
+        <span class="inspector-selector" title="${selectorText}">${truncatedSelector}</span>
+        ${specificity ? `<span class="inspector-specificity">${escapeHtml(specificity)}</span>` : ''}
+      </div>
+      <div class="inspector-rule-props">${propsHtml}</div>
+      ${sourceDisplay ? `<div class="inspector-rule-source">${escapeHtml(sourceDisplay)}</div>` : ''}
+    </div>
+  `;
+}
+
+// ─── Computed Styles Rendering ──────────────────────────────────
+
+function renderComputedStyles(data) {
+  const styles = data.computedStyles || data.basicData?.computedStyles || {};
+  const keys = Object.keys(styles);
+
+  if (keys.length === 0) {
+    inspectorComputed.innerHTML = '<div class="inspector-no-data">No computed styles</div>';
+    return;
+  }
+
+  let html = '';
+  for (const key of keys) {
+    const val = styles[key];
+    if (!val || val === 'none' || val === 'normal' || val === 'auto' || val === '0px' || val === 'rgba(0, 0, 0, 0)') continue;
+    html += `<div class="inspector-computed-row"><span class="inspector-prop-name">${escapeHtml(key)}</span>: <span class="inspector-prop-value">${escapeHtml(val)}</span></div>`;
+  }
+
+  if (!html) {
+    html = '<div class="inspector-no-data">All values are defaults</div>';
+  }
+
+  inspectorComputed.innerHTML = html;
+}
+
+// ─── Quick Edit ─────────────────────────────────────────────────
+
+function renderQuickEdit(data) {
+  const selector = data.selector;
+  if (!selector) { inspectorQuickedit.innerHTML = ''; return; }
+
+  // Show common editable properties with current values
+  const editableProps = ['color', 'background-color', 'font-size', 'padding', 'margin', 'border', 'display', 'opacity'];
+  const computed = data.computedStyles || data.basicData?.computedStyles || {};
+
+  let html = '<div class="inspector-quickedit-list">';
+  for (const prop of editableProps) {
+    const val = computed[prop] || '';
+    html += `
+      <div class="inspector-quickedit-row" data-prop="${escapeHtml(prop)}">
+        <span class="inspector-prop-name">${escapeHtml(prop)}</span>:
+        <span class="inspector-quickedit-value" data-selector="${escapeHtml(selector)}" data-prop="${escapeHtml(prop)}" tabindex="0" role="button" title="Click to edit">${escapeHtml(val || '(none)')}</span>
+      </div>
+    `;
+  }
+  html += '</div>';
+  inspectorQuickedit.innerHTML = html;
+
+  // Bind click-to-edit
+  inspectorQuickedit.querySelectorAll('.inspector-quickedit-value').forEach(el => {
+    el.addEventListener('click', () => startQuickEdit(el));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startQuickEdit(el); }
+    });
+  });
+}
+
+function startQuickEdit(valueEl) {
+  if (valueEl.querySelector('input')) return; // already editing
+
+  const currentVal = valueEl.textContent === '(none)' ? '' : valueEl.textContent;
+  const prop = valueEl.dataset.prop;
+  const selector = valueEl.dataset.selector;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'inspector-quickedit-input';
+  input.value = currentVal;
+  valueEl.textContent = '';
+  valueEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  function commit() {
+    const newVal = input.value.trim();
+    valueEl.textContent = newVal || '(none)';
+    if (newVal && newVal !== currentVal) {
+      chrome.runtime.sendMessage({
+        type: 'applyStyle',
+        selector,
+        property: prop,
+        value: newVal,
+      });
+      inspectorModifications.push({ property: prop, value: newVal, selector });
+      updateSendButton();
+    }
+  }
+
+  function cancel() {
+    valueEl.textContent = currentVal || '(none)';
+  }
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', commit); cancel(); }
+  });
+}
+
+// ─── Send to Agent ──────────────────────────────────────────────
+
+function updateSendButton() {
+  if (inspectorModifications.length > 0) {
+    inspectorSendBtn.textContent = 'Send to Code';
+    inspectorSendBtn.title = `${inspectorModifications.length} modification(s) to send`;
+  } else {
+    inspectorSendBtn.textContent = 'Send to Agent';
+    inspectorSendBtn.title = 'Send full inspector data';
+  }
+}
+
+inspectorSendBtn.addEventListener('click', () => {
+  if (!inspectorData) return;
+
+  let message;
+  if (inspectorModifications.length > 0) {
+    // Format modification diff
+    const diffs = inspectorModifications.map(m =>
+      `  ${m.property}: ${m.value} (selector: ${m.selector})`
+    ).join('\n');
+    message = `CSS Inspector modifications:\n\nSelector: ${inspectorData.selector}\n\nChanges:\n${diffs}`;
+
+    // Include source file info if available
+    const rules = inspectorData.matchedRules || inspectorData.basicData?.matchedRules || [];
+    const sources = rules.filter(r => r.source && r.source !== 'inline').map(r => r.source);
+    if (sources.length > 0) {
+      message += `\n\nSource files:\n${[...new Set(sources)].map(s => `  ${s}`).join('\n')}`;
+    }
+  } else {
+    // Send full inspector data
+    message = `CSS Inspector data for: ${inspectorData.selector}\n\n${JSON.stringify(inspectorData, null, 2)}`;
+  }
+
+  // Inject into the running claude PTY so the user can ask claude to act
+  // on the inspector data. Replaces the old `sidebar-command` route which
+  // spawned a one-shot claude -p (sidebar-agent.ts is gone).
+  const ok = window.gstackInjectToTerminal?.(message + '\n');
+  if (!ok) {
+    console.warn('[gstack sidebar] Inspector send needs an active Terminal session.');
+  }
+});
+
+// ─── Quick Action Helpers (toolbar buttons) ──────────────────────
+
+/**
+ * "Cleanup" injects a prompt into the running claude PTY. claude takes the
+ * prompt, snapshots the page, hides ads/banners/popups, leaves article
+ * content. The user watches it happen in the Terminal pane.
+ *
+ * Replaced the old chat-queue path (sidebar-agent.ts spawning a one-shot
+ * claude -p) — we have a live REPL now, so route through that instead.
+ */
+async function runCleanup(...buttons) {
+  buttons.forEach(b => b?.classList.add('loading'));
+  const cleanupPrompt = [
+    'Clean up the active browser page for reading. Run:',
+    '$B cleanup --all',
+    'then $B snapshot -i, identify any remaining ads, cookie/consent banners,',
+    'newsletter popups, login walls, video autoplay, sidebar widgets, share',
+    'buttons, floating chat widgets, and hide each via $B eval. Keep the site',
+    'header/masthead, headline, article body, images, byline, and date. Also',
+    'unlock scrolling if the page is scroll-locked.',
+  ].join('\n');
+  const sent = window.gstackInjectToTerminal?.(cleanupPrompt + '\n');
+  if (!sent) {
+    console.warn('[gstack sidebar] Cleanup needs an active Terminal session.');
+  }
+  setTimeout(() => buttons.forEach(b => b?.classList.remove('loading')), 1200);
+}
+
+async function runScreenshot(...buttons) {
+  if (!serverUrl || !serverToken) return;
+  buttons.forEach(b => b?.classList.add('loading'));
+  try {
+    const resp = await fetch(`${serverUrl}/command`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'screenshot', args: [] }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      console.warn('[gstack sidebar] Screenshot failed:', text);
+    } else {
+      console.log('[gstack sidebar] Screenshot:', text);
+    }
+  } catch (err) {
+    console.error('[gstack sidebar] Screenshot error:', err.message);
+  } finally {
+    buttons.forEach(b => b?.classList.remove('loading'));
+  }
+}
+
+// ─── Wire up all cleanup/screenshot buttons (inspector + chat toolbar) ──
+
+const inspectorCleanupBtn = document.getElementById('inspector-cleanup-btn');
+const inspectorScreenshotBtn = document.getElementById('inspector-screenshot-btn');
+const chatCleanupBtn = document.getElementById('chat-cleanup-btn');
+const chatScreenshotBtn = document.getElementById('chat-screenshot-btn');
+
+if (inspectorCleanupBtn) inspectorCleanupBtn.addEventListener('click', () => runCleanup(inspectorCleanupBtn, chatCleanupBtn));
+if (inspectorScreenshotBtn) inspectorScreenshotBtn.addEventListener('click', () => runScreenshot(inspectorScreenshotBtn, chatScreenshotBtn));
+if (chatCleanupBtn) chatCleanupBtn.addEventListener('click', () => runCleanup(chatCleanupBtn, inspectorCleanupBtn));
+if (chatScreenshotBtn) chatScreenshotBtn.addEventListener('click', () => runScreenshot(chatScreenshotBtn, inspectorScreenshotBtn));
+
+// ─── Section Toggles ────────────────────────────────────────────
+
+document.querySelectorAll('.inspector-section-toggle').forEach(toggle => {
+  toggle.addEventListener('click', () => {
+    const section = toggle.dataset.section;
+    const body = document.getElementById(`inspector-${section}`);
+    const isCollapsed = toggle.classList.contains('collapsed');
+
+    toggle.classList.toggle('collapsed', !isCollapsed);
+    toggle.setAttribute('aria-expanded', isCollapsed);
+    toggle.querySelector('.inspector-toggle-arrow').innerHTML = isCollapsed ? '&#x25BC;' : '&#x25B6;';
+    body.classList.toggle('collapsed', !isCollapsed);
+  });
+});
+
+// ─── Inspector SSE ──────────────────────────────────────────────
+
+async function connectInspectorSSE() {
+  if (!serverUrl || !serverToken) return;
+  if (inspectorSSE) { inspectorSSE.close(); inspectorSSE = null; }
+
+  // Same session-cookie pattern as connectSSE. ?token= is gone (see N1
+  // in the v1.6.0.0 security wave plan).
+  await ensureSseSessionCookie();
+  const url = `${serverUrl}/inspector/events?_=${Date.now()}`;
+
+  try {
+    inspectorSSE = new EventSource(url, { withCredentials: true });
+
+    inspectorSSE.addEventListener('inspectResult', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        inspectorShowData(data);
+      } catch (err) {
+        console.error('[gstack sidebar] Failed to parse inspectResult:', err.message);
+      }
+    });
+
+    inspectorSSE.addEventListener('error', () => {
+      // SSE connection failed — inspector works without it (basic mode)
+      if (inspectorSSE) { inspectorSSE.close(); inspectorSSE = null; }
+    });
+  } catch (err) {
+    console.debug('[gstack sidebar] Inspector SSE not available:', err.message);
+  }
 }
 
 // ─── Server Discovery ───────────────────────────────────────────
+
+function setActionButtonsEnabled(enabled) {
+  const btns = document.querySelectorAll('.quick-action-btn, .inspector-action-btn');
+  btns.forEach(btn => {
+    btn.disabled = !enabled;
+    btn.classList.toggle('disabled', !enabled);
+  });
+}
 
 function updateConnection(url, token) {
   const wasConnected = !!serverUrl;
   serverUrl = url;
   serverToken = token || null;
+  // Expose for sidepanel-terminal.js (PTY surface). The terminal pane needs
+  // the bootstrap token to POST /pty-session and the port to derive the WS
+  // URL. We never expose the PTY token — it lives in an HttpOnly cookie.
+  if (url) {
+    try { window.gstackServerPort = parseInt(new URL(url).port, 10); } catch {}
+    window.gstackAuthToken = token || null;
+  } else {
+    window.gstackServerPort = null;
+    window.gstackAuthToken = null;
+  }
   if (url) {
     document.getElementById('footer-dot').className = 'dot connected';
     const port = new URL(url).port;
     document.getElementById('footer-port').textContent = `:${port}`;
     setConnState('connected');
+    setActionButtonsEnabled(true);
+    // Tell the active tab's content script the sidebar is open — this hides
+    // the welcome page arrow hint. Only fires on actual sidebar connection.
+    chrome.runtime.sendMessage({ type: 'sidebarOpened' }).catch(() => {});
     connectSSE();
-    if (chatPollInterval) clearInterval(chatPollInterval);
-    chatPollInterval = setInterval(pollChat, 1000);
-    pollChat();
+    connectInspectorSSE();
   } else {
     document.getElementById('footer-dot').className = 'dot';
     document.getElementById('footer-port').textContent = '';
-    if (chatPollInterval) { clearInterval(chatPollInterval); chatPollInterval = null; }
-    if (wasConnected) {
-      startReconnect();
-    }
+    setActionButtonsEnabled(false);
+    if (wasConnected) startReconnect();
   }
 }
 
@@ -582,26 +904,106 @@ document.getElementById('conn-reconnect').addEventListener('click', () => {
 });
 
 document.getElementById('conn-copy').addEventListener('click', () => {
-  navigator.clipboard.writeText('/connect-chrome').then(() => {
+  navigator.clipboard.writeText('/open-gstack-browser').then(() => {
     const btn = document.getElementById('conn-copy');
     btn.textContent = 'copied!';
-    setTimeout(() => { btn.textContent = '/connect-chrome'; }, 2000);
+    setTimeout(() => { btn.textContent = '/open-gstack-browser'; }, 2000);
   });
 });
 
-// Try to connect immediately, retry every 2s until connected
-function tryConnect() {
-  chrome.runtime.sendMessage({ type: 'getPort' }, (resp) => {
-    if (resp && resp.port && resp.connected) {
-      const url = `http://127.0.0.1:${resp.port}`;
-      // Get the token from background
-      chrome.runtime.sendMessage({ type: 'getToken' }, (tokenResp) => {
-        updateConnection(url, tokenResp?.token);
-      });
-    } else {
-      setTimeout(tryConnect, 2000);
-    }
+// Try to connect immediately, retry every 2s until connected.
+// Show exactly what's happening at each step so the user is never
+// staring at a blank "Connecting..." with no info.
+let connectAttempts = 0;
+function setLoadingStatus(msg, debug) {
+  // The status line lives inside the Terminal bootstrap card now —
+  // sidepanel-terminal.js owns it. We only update the debug pre block,
+  // and trust the terminal pane to surface the human-readable status.
+  const dbg = document.getElementById('loading-debug');
+  if (dbg && debug !== undefined) dbg.textContent = debug;
+}
+
+async function tryConnect() {
+  connectAttempts++;
+  setLoadingStatus(
+    `Looking for browse server... (attempt ${connectAttempts})`,
+    `Asking background.js for server port...`
+  );
+
+  // Step 1: Ask background for the port
+  const resp = await new Promise(resolve => {
+    chrome.runtime.sendMessage({ type: 'getPort' }, (r) => {
+      if (chrome.runtime.lastError) {
+        resolve({ error: chrome.runtime.lastError.message });
+      } else {
+        resolve(r || {});
+      }
+    });
   });
+
+  if (resp.error) {
+    setLoadingStatus(
+      `Extension error (attempt ${connectAttempts})`,
+      `chrome.runtime.sendMessage failed:\n${resp.error}`
+    );
+    setTimeout(tryConnect, 2000);
+    return;
+  }
+
+  const port = resp.port || 34567;
+
+  // Step 2: If background says connected + has token, use that
+  if (resp.port && resp.connected && resp.token) {
+    setLoadingStatus(
+      `Server found on port ${port}, connecting...`,
+      `token: yes\nStarting SSE + chat polling...`
+    );
+    updateConnection(`http://127.0.0.1:${port}`, resp.token);
+    return;
+  }
+
+  // Step 3: Background not connected yet. Try hitting /health directly.
+  // This bypasses the background.js health poll timing gap.
+  setLoadingStatus(
+    `Checking server directly... (attempt ${connectAttempts})`,
+    `port: ${port}\nbackground connected: ${resp.connected || false}\nTrying GET http://127.0.0.1:${port}/health ...`
+  );
+
+  try {
+    const healthResp = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (healthResp.ok) {
+      const data = await healthResp.json();
+      if (data.status === 'healthy' && data.token) {
+        setLoadingStatus(
+          `Server healthy on port ${port}, connecting...`,
+          `token: yes (from /health)\nStarting SSE + activity feed...`
+        );
+        updateConnection(`http://127.0.0.1:${port}`, data.token);
+        // The SEC shield used to drive off /health.security via the chat
+        // path's classifier; with the chat path ripped, the indicator is
+        // not driven yet. Leaving the shield element hidden by default.
+        return;
+      }
+      setLoadingStatus(
+        `Server responded but not healthy (attempt ${connectAttempts})`,
+        `status: ${data.status}\ntoken: ${data.token ? 'yes' : 'no'}`
+      );
+    } else {
+      setLoadingStatus(
+        `Server returned ${healthResp.status} (attempt ${connectAttempts})`,
+        `GET /health → ${healthResp.status} ${healthResp.statusText}`
+      );
+    }
+  } catch (e) {
+    setLoadingStatus(
+      `Server not reachable on port ${port} (attempt ${connectAttempts})`,
+      `GET /health failed: ${e.message}\n\nThe browse server may still be starting.\nRun /open-gstack-browser in Claude Code.`
+    );
+  }
+
+  setTimeout(tryConnect, 2000);
 }
 tryConnect();
 
@@ -611,8 +1013,10 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'health') {
     if (msg.data) {
       const url = `http://127.0.0.1:${msg.data.port || 34567}`;
-      updateConnection(url, msg.data.token);
-      applyChatEnabled(!!msg.data.chatEnabled);
+      // Request token via targeted sendResponse (not broadcast) to limit exposure
+      chrome.runtime.sendMessage({ type: 'getToken' }, (resp) => {
+        updateConnection(url, resp?.token || null);
+      });
     } else {
       updateConnection(null);
     }
@@ -622,40 +1026,26 @@ chrome.runtime.onMessage.addListener((msg) => {
       fetchRefs();
     }
   }
-});
-
-// ─── Chat Gate ──────────────────────────────────────────────────
-// Show/hide Chat tab + command bar based on chatEnabled from server
-
-function applyChatEnabled(enabled) {
-  const commandBar = document.querySelector('.command-bar');
-  const chatTab = document.getElementById('tab-chat');
-  const banner = document.getElementById('experimental-banner');
-  const clearBtn = document.getElementById('clear-chat');
-
-  if (enabled) {
-    // Chat is enabled: show command bar, chat tab, experimental banner
-    if (commandBar) commandBar.style.display = '';
-    if (chatTab) chatTab.style.display = '';
-    if (banner) banner.style.display = '';
-    if (clearBtn) clearBtn.style.display = '';
-  } else {
-    // Chat disabled: hide command bar, chat content, clear button
-    if (commandBar) commandBar.style.display = 'none';
-    if (banner) banner.style.display = 'none';
-    if (clearBtn) clearBtn.style.display = 'none';
-    // If currently on chat tab, switch to activity
-    if (chatTab && chatTab.classList.contains('active')) {
-      chatTab.classList.remove('active');
-      // Open debug tabs and show activity
-      const debugToggle = document.getElementById('debug-toggle');
-      const debugTabs = document.getElementById('debug-tabs');
-      if (debugToggle) debugToggle.classList.add('active');
-      if (debugTabs) debugTabs.style.display = 'flex';
-      const activityTab = document.getElementById('tab-activity');
-      if (activityTab) activityTab.classList.add('active');
-      const activityBtn = document.querySelector('.tab[data-tab="activity"]');
-      if (activityBtn) activityBtn.classList.add('active');
+  if (msg.type === 'inspectResult') {
+    inspectorPickerActive = false;
+    inspectorPickBtn.classList.remove('active');
+    if (msg.data) {
+      inspectorShowData(msg.data);
+    } else {
+      inspectorShowError('Element not found, try picking again');
     }
   }
-}
+  if (msg.type === 'pickerCancelled') {
+    inspectorPickerActive = false;
+    inspectorPickBtn.classList.remove('active');
+  }
+  // browserTabState: full snapshot of all open tabs + the active one,
+  // pushed by background.js on chrome.tabs events. We forward it as a
+  // custom event so sidepanel-terminal.js can relay to terminal-agent.ts.
+  // Result: claude's <stateDir>/tabs.json + active-tab.json stay live.
+  if (msg.type === 'browserTabState') {
+    document.dispatchEvent(new CustomEvent('gstack:tab-state', {
+      detail: { active: msg.active, tabs: msg.tabs, reason: msg.reason },
+    }));
+  }
+});
