@@ -12,6 +12,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { mkdirSecure } from './file-permissions';
 
 export interface BrowseConfig {
   projectDir: string;
@@ -20,6 +21,7 @@ export interface BrowseConfig {
   consoleLog: string;
   networkLog: string;
   dialogLog: string;
+  auditLog: string;
 }
 
 /**
@@ -70,6 +72,7 @@ export function resolveConfig(
     consoleLog: path.join(stateDir, 'browse-console.log'),
     networkLog: path.join(stateDir, 'browse-network.log'),
     dialogLog: path.join(stateDir, 'browse-dialog.log'),
+    auditLog: path.join(stateDir, 'browse-audit.jsonl'),
   };
 }
 
@@ -79,7 +82,7 @@ export function resolveConfig(
  */
 export function ensureStateDir(config: BrowseConfig): void {
   try {
-    fs.mkdirSync(config.stateDir, { recursive: true });
+    mkdirSecure(config.stateDir);
   } catch (err: any) {
     if (err.code === 'EACCES') {
       throw new Error(`Cannot create state directory ${config.stateDir}: permission denied`);
