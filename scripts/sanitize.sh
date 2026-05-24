@@ -149,6 +149,11 @@ rm -rf supabase/
 # ─── Step 2b: Delete analytics infrastructure ────────────────────
 echo "Removing analytics/telemetry CLI and tests..."
 rm -f scripts/analytics.ts test/analytics.test.ts test/telemetry.test.ts
+# browse/src/telemetry.ts: new upstream analytics module writing to ~/.gstack/analytics/
+# (browse-telemetry.jsonl, default ON). Delete the source and its test.
+rm -f browse/src/telemetry.ts browse/test/telemetry.test.ts
+# test/gbrain-supabase-provision.test.ts: test for the supabase provision script we strip
+rm -f test/gbrain-supabase-provision.test.ts
 
 # ─── Step 2c: Delete host-specific directories (not used by gstuck) ──
 for dir in .agents .factory; do
@@ -167,7 +172,9 @@ if [ -d ".github" ]; then
 fi
 
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
-for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard; do
+# gstack-gbrain-supabase-provision: makes curl calls to https://api.supabase.com
+# (user-provisioning tool, but curl in bin/ is out of scope for gstuck's no-network policy).
+for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard bin/gstack-gbrain-supabase-provision; do
   if [ -f "$script" ]; then
     echo "  No-op: $script"
     printf '#!/usr/bin/env bash\n# [gstuck] Neutralized.\nexit 0\n' > "$script"

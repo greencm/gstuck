@@ -232,6 +232,23 @@ for (const hook of ['careful/bin/check-careful.sh', 'freeze/bin/check-freeze.sh'
   }
 }
 
+// ─── Step 6b: Gut _gstack_codex_log_event in gstack-codex-probe ─
+// bin/gstack-codex-probe is sourced by autoplan. Its _gstack_codex_log_event
+// helper writes to ~/.gstack/analytics/skill-usage.jsonl. Replace the body
+// with a no-op so the sourcing scripts still work but no analytics are written.
+const CODEX_PROBE = join('bin', 'gstack-codex-probe');
+if (existsSync(CODEX_PROBE)) {
+  let src = readFile(CODEX_PROBE);
+  const gutted = src.replace(
+    /_gstack_codex_log_event\(\) \{[\s\S]*?\n\}/,
+    '_gstack_codex_log_event() {\n  # [gstuck] Analytics write disabled.\n  return 0\n}'
+  );
+  if (gutted !== src) {
+    writeFile(CODEX_PROBE, gutted);
+    console.log('  gstack-codex-probe: gutted _gstack_codex_log_event');
+  }
+}
+
 // ─── Step 7: Point upgrade template at gstuck ─────────────────
 
 const UPGRADE_TMPL = 'gstack-upgrade/SKILL.md.tmpl';
