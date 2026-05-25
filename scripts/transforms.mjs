@@ -204,6 +204,23 @@ for (const [filename, stub] of Object.entries(EXTRACTED_PREAMBLE_STUBS)) {
   }
 }
 
+// ─── Step 4c: Neutralize browse/src/telemetry.ts ─────────────────────────────
+// v1.40+ added a TypeScript telemetry module that writes browse events to
+// ~/.gstack/analytics/browse-telemetry.jsonl with default ON. Replace with
+// a no-op stub that exports the same interface so callers compile cleanly.
+
+const BROWSE_TELEMETRY = 'browse/src/telemetry.ts';
+if (existsSync(BROWSE_TELEMETRY)) {
+  writeFile(BROWSE_TELEMETRY, [
+    '// [gstuck] Browse telemetry disabled.',
+    'export interface TelemetryEvent { event: string; [key: string]: unknown; }',
+    'export function logTelemetry(_payload: TelemetryEvent): void {}',
+    'export function _resetTelemetryCache(): void {}',
+    '',
+  ].join('\n'));
+  console.log('  browse/src/telemetry.ts: neutralized to no-op');
+}
+
 // ─── Step 5: Remove inline analytics from .tmpl and SKILL.md ──
 
 const analyticsPatterns = [
