@@ -148,7 +148,7 @@ rm -rf supabase/
 
 # ─── Step 2b: Delete analytics infrastructure ────────────────────
 echo "Removing analytics/telemetry CLI and tests..."
-rm -f scripts/analytics.ts test/analytics.test.ts test/telemetry.test.ts
+rm -f scripts/analytics.ts test/analytics.test.ts test/telemetry.test.ts browse/test/telemetry.test.ts
 
 # ─── Step 2c: Delete host-specific directories (not used by gstuck) ──
 for dir in .agents .factory; do

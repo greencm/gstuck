@@ -110,6 +110,16 @@ if [ -d "supabase" ]; then
   FAIL=1
 fi
 
+# ─── browse/src/telemetry.ts must be a no-op ─────────────────
+# v1.40+ added a browse telemetry module that writes to ~/.gstack/analytics/
+# It must be neutralized to an empty stub.
+if [ -f "browse/src/telemetry.ts" ]; then
+  if grep -q 'appendFile\|fs\.write\|analyticsDir\|browse-telemetry' "browse/src/telemetry.ts"; then
+    echo "FAIL: browse/src/telemetry.ts contains active analytics writes"
+    FAIL=1
+  fi
+fi
+
 # ─── No telemetry prompt in gen-skill-docs.ts ─────────────────
 if [ -f "scripts/gen-skill-docs.ts" ]; then
   if grep -q 'Help gstack get better' "scripts/gen-skill-docs.ts"; then
