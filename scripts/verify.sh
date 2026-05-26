@@ -173,6 +173,24 @@ if [ -n "$OLD_PATH_MATCHES" ]; then
   FAIL=1
 fi
 
+# ─── gstack-codex-probe analytics write is nulled ────────────
+# _gstack_codex_log_event must be a no-op (stripped by transform step 18)
+if [ -f bin/gstack-codex-probe ]; then
+  if grep -q 'skill-usage\.jsonl' bin/gstack-codex-probe; then
+    echo "FAIL: bin/gstack-codex-probe still contains skill-usage.jsonl write"
+    FAIL=1
+  fi
+fi
+
+# ─── design-html template has no external CDN fallback ───────
+# esm.sh CDN fallback must be stripped from design-html/SKILL.md.tmpl
+if [ -f design-html/SKILL.md.tmpl ]; then
+  if grep -q 'esm\.sh' design-html/SKILL.md.tmpl; then
+    echo "FAIL: design-html/SKILL.md.tmpl still contains esm.sh CDN URL"
+    FAIL=1
+  fi
+fi
+
 # ─── Dependency pinning checks ────────────────────────────────
 if grep -q '"\^' package.json 2>/dev/null; then
   echo "FAIL: package.json still has ^ range dependencies"
