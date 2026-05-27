@@ -81,8 +81,17 @@ if [ -n "$TMPL_JSONL" ]; then
   FAIL=1
 fi
 
+# ─── No JSONL writes in bin/ scripts ──────────────────────────
+BIN_JSONL=$(grep -r 'skill-usage\.jsonl' bin/ 2>/dev/null \
+  | grep -v '# \[gstuck\]' || true)
+if [ -n "$BIN_JSONL" ]; then
+  echo "FAIL: skill-usage.jsonl write found in bin/ scripts:"
+  echo "$BIN_JSONL" | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── Telemetry bin scripts are no-ops ─────────────────────────
-for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check; do
+for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-security-dashboard; do
   if [ -f "$script" ]; then
     if ! grep -q 'exit 0' "$script"; then
       echo "FAIL: $script is not a no-op"

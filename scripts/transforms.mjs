@@ -223,6 +223,22 @@ for (const f of findFiles(ROOT, ['.tmpl', '.md'], ['node_modules', '.git'])) {
 }
 console.log('  Removed inline analytics/telemetry from templates + SKILL.md files');
 
+// ─── Step 5b: Gut _gstack_codex_log_event in gstack-codex-probe ─────────────
+// v1.40 added bin/gstack-codex-probe with a _gstack_codex_log_event() helper
+// that writes to ~/.gstack/analytics/skill-usage.jsonl (gated on $_TEL, but
+// still an active analytics write path). Replace the function body with a no-op.
+
+const CODEX_PROBE = 'bin/gstack-codex-probe';
+if (existsSync(CODEX_PROBE)) {
+  let src = readFile(CODEX_PROBE);
+  src = src.replace(
+    /(_gstack_codex_log_event\(\) \{)[\s\S]*?\n\}/,
+    '$1\n  : # [gstuck] telemetry disabled\n}'
+  );
+  writeFile(CODEX_PROBE, src);
+  console.log('  bin/gstack-codex-probe: gutted _gstack_codex_log_event');
+}
+
 // ─── Step 6: Remove analytics from hook scripts ──────────────
 
 for (const hook of ['careful/bin/check-careful.sh', 'freeze/bin/check-freeze.sh']) {

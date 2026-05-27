@@ -167,7 +167,7 @@ if [ -d ".github" ]; then
 fi
 
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
-for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard; do
+for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard bin/gstack-security-dashboard; do
   if [ -f "$script" ]; then
     echo "  No-op: $script"
     printf '#!/usr/bin/env bash\n# [gstuck] Neutralized.\nexit 0\n' > "$script"
