@@ -81,6 +81,17 @@ if [ -n "$TMPL_JSONL" ]; then
   FAIL=1
 fi
 
+# ─── No analytics writes in bin/ scripts ──────────────────────
+# post-build-fixup.mjs strips all lines (code + comments) referencing
+# analytics paths from bin/. Any match here means the fixup has a gap.
+BIN_ANALYTICS=$(grep -rn 'skill-usage\.jsonl\|\.gstack/analytics' bin/ 2>/dev/null \
+  | grep -v test/ || true)
+if [ -n "$BIN_ANALYTICS" ]; then
+  echo "FAIL: analytics write path found in bin/ scripts:"
+  echo "$BIN_ANALYTICS" | head -10 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── Telemetry bin scripts are no-ops ─────────────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check; do
   if [ -f "$script" ]; then
