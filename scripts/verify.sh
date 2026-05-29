@@ -81,6 +81,25 @@ if [ -n "$TMPL_JSONL" ]; then
   FAIL=1
 fi
 
+# ─── No active analytics writes in bin/ scripts ───────────────
+# bin/ contains extensionless bash files — verify.sh's --include filters miss them.
+# Check for skill-usage.jsonl writes and analytics directory creation.
+BIN_ANALYTICS=$(grep -rn 'skill-usage\.jsonl\|mkdir -p.*\.gstack/analytics\|>> .*\.gstack/analytics' bin/ 2>/dev/null \
+  | grep -v '# \[gstuck\]' | grep -v '^Binary' || true)
+if [ -n "$BIN_ANALYTICS" ]; then
+  echo "FAIL: active analytics write found in bin/ script:"
+  echo "$BIN_ANALYTICS" | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ─── No upstream CI configs in output ─────────────────────────
+for ci_file in .gitlab-ci.yml; do
+  if [ -f "$ci_file" ]; then
+    echo "FAIL: $ci_file still present (should be stripped by sanitize.sh)"
+    FAIL=1
+  fi
+done
+
 # ─── Telemetry bin scripts are no-ops ─────────────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check; do
   if [ -f "$script" ]; then

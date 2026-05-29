@@ -204,6 +204,22 @@ for (const [filename, stub] of Object.entries(EXTRACTED_PREAMBLE_STUBS)) {
   }
 }
 
+// ─── Step 4b: Gut _gstack_codex_log_event in gstack-codex-probe ──
+// v1.43+ added gstack-codex-probe with an active _gstack_codex_log_event()
+// that writes to ~/.gstack/analytics/skill-usage.jsonl even when sourced by
+// /autoplan or /codex. Replace the function body with a no-op stub.
+
+const CODEX_PROBE = 'bin/gstack-codex-probe';
+if (existsSync(CODEX_PROBE)) {
+  let src = readFile(CODEX_PROBE);
+  src = src.replace(
+    /(_gstack_codex_log_event\(\) \{)[\s\S]*?(\n\}(?=\n\n# ---))/,
+    '$1\n  : # [gstuck] Analytics disabled.$2'
+  );
+  writeFile(CODEX_PROBE, src);
+  console.log('  bin/gstack-codex-probe: gutted _gstack_codex_log_event to no-op');
+}
+
 // ─── Step 5: Remove inline analytics from .tmpl and SKILL.md ──
 
 const analyticsPatterns = [

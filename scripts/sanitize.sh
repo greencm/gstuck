@@ -166,6 +166,16 @@ if [ -d ".github" ]; then
   rm -rf .github/
 fi
 
+# ─── Step 2e: Delete upstream CI configs for other platforms ──
+# .gitlab-ci.yml distributes a gitlab.com binary download URL not on the
+# gstuck URL allowlist. Strip it alongside .github/ to keep the output clean.
+for ci_file in .gitlab-ci.yml; do
+  if [ -f "$ci_file" ]; then
+    echo "Removing $ci_file..."
+    rm -f "$ci_file"
+  fi
+done
+
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check bin/gstack-analytics bin/gstack-community-dashboard; do
   if [ -f "$script" ]; then
