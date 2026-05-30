@@ -221,6 +221,65 @@ if (existsSync(BROWSE_TELEMETRY)) {
   console.log('  browse/src/telemetry.ts: neutralized to no-op');
 }
 
+// ─── Step 4d: Neutralize analytics write in bin/gstack-codex-probe ──────────
+// v1.43+ added gstack-codex-probe with _gstack_codex_log_event() that writes
+// to ~/.gstack/analytics/skill-usage.jsonl when $_TEL != "off".
+// Replace the function body with a no-op so the write path never exists.
+
+const CODEX_PROBE = 'bin/gstack-codex-probe';
+if (existsSync(CODEX_PROBE)) {
+  let src = readFile(CODEX_PROBE);
+  const neutralized = src.replace(
+    /^(_gstack_codex_log_event\(\) \{)[\s\S]*?^}/m,
+    '$1\n  # [gstuck] Analytics write disabled.\n  return 0\n}'
+  );
+  if (neutralized !== src) {
+    writeFile(CODEX_PROBE, neutralized);
+    console.log('  bin/gstack-codex-probe: neutralized _gstack_codex_log_event');
+  }
+}
+
+// ─── Step 4e: Strip eureka log from generate-search-before-building.ts ───────
+// v1.43+ added this resolver which embeds a jq write to
+// ~/.gstack/analytics/eureka.jsonl in the generated preamble content.
+// Apply gutPreambleSource to remove the analytics write, then strip the
+// now-empty Eureka instruction block.
+
+const SEARCH_BEFORE_BUILDING = 'scripts/resolvers/preamble/generate-search-before-building.ts';
+if (existsSync(SEARCH_BEFORE_BUILDING)) {
+  gutPreambleSource(SEARCH_BEFORE_BUILDING);
+  // Remove the orphaned Eureka block (text + empty escaped-backtick fence).
+  // In a TS template literal, code fences appear as \`\`\`bash / \`\`\`
+  let src = readFile(SEARCH_BEFORE_BUILDING);
+  const cleaned = src.replace(
+    /\n\*\*Eureka:\*\*[^\n]*\n\\`\\`\\`bash\n\\`\\`\\`/g,
+    ''
+  );
+  if (cleaned !== src) {
+    writeFile(SEARCH_BEFORE_BUILDING, cleaned);
+    console.log('  generate-search-before-building.ts: removed Eureka analytics block');
+  }
+}
+
+// ─── Step 4f: Replace esm.sh CDN fallback in design-html ───────────────────
+// v1.43+ added design-html/SKILL.md.tmpl which instructs Claude to load
+// @chenglou/pretext from https://esm.sh/ when the vendor file is missing.
+// Replace the CDN fallback with a stop instruction so no external network
+// request is made silently.
+
+const DESIGN_HTML_TMPL = 'design-html/SKILL.md.tmpl';
+if (existsSync(DESIGN_HTML_TMPL)) {
+  let src = readFile(DESIGN_HTML_TMPL);
+  const replaced = src.replace(
+    /- If `VENDOR_MISSING`: use CDN import as fallback:\s*\n\s*`<script[^`]*esm\.sh[^`]*>`\s*\n\s*Add a comment:.*\n?/g,
+    '- If `VENDOR_MISSING`: **stop** — tell the user: "pretext vendor file not found at `~/.claude/skills/gstuck/output/gstack/design-html/vendor/pretext.js`. Re-install gstuck to restore it." Do not load from CDN.\n'
+  );
+  if (replaced !== src) {
+    writeFile(DESIGN_HTML_TMPL, replaced);
+    console.log('  design-html/SKILL.md.tmpl: replaced esm.sh CDN fallback with stop instruction');
+  }
+}
+
 // ─── Step 5: Remove inline analytics from .tmpl and SKILL.md ──
 
 const analyticsPatterns = [
