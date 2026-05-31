@@ -481,24 +481,6 @@ if (existsSync(GSTACK_CONFIG)) {
   }
 }
 
-// ─── Step 18: Null _gstack_codex_log_event in gstack-codex-probe ──────────────
-// v1.40+ added this function which writes to ~/.gstack/analytics/skill-usage.jsonl.
-// It is gated on $_TEL != "off" (defaults off), but gstuck policy is to null all
-// analytics write functions rather than rely on opt-in gates.
-
-const CODEX_PROBE = 'bin/gstack-codex-probe';
-if (existsSync(CODEX_PROBE)) {
-  let src = readFile(CODEX_PROBE);
-  const nulled = src.replace(
-    /_gstack_codex_log_event\(\) \{[\s\S]*?\n\}/,
-    '_gstack_codex_log_event() { : ; } # [gstuck] Analytics disabled'
-  );
-  if (nulled !== src) {
-    writeFile(CODEX_PROBE, nulled);
-    console.log('  Nulled _gstack_codex_log_event in gstack-codex-probe');
-  }
-}
-
 // ─── Step 19: Strip esm.sh CDN fallback from design-html template ─────────────
 // v1.40+ added design-html/SKILL.md.tmpl which instructs Claude to fall back to
 // https://esm.sh/@chenglou/pretext (external CDN) when the vendor file is missing.
