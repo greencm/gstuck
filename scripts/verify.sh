@@ -121,6 +121,44 @@ if [ -d "supabase" ]; then
   FAIL=1
 fi
 
+# ─── .gitlab-ci.yml should not exist ──────────────────────────
+if [ -f ".gitlab-ci.yml" ]; then
+  echo "FAIL: .gitlab-ci.yml still present (contains gitlab.com binary download URL)"
+  FAIL=1
+fi
+
+# ─── bin/gstack-codex-probe must not write to analytics ───────
+if [ -f "bin/gstack-codex-probe" ]; then
+  if grep -q '\.gstack/analytics/skill-usage\.jsonl' "bin/gstack-codex-probe"; then
+    echo "FAIL: bin/gstack-codex-probe contains active analytics write to skill-usage.jsonl"
+    FAIL=1
+  fi
+fi
+
+# ─── bin/gstack-session-update must be a no-op ────────────────
+if [ -f "bin/gstack-session-update" ]; then
+  if grep -qE 'git (pull|fetch|reset|clone)' "bin/gstack-session-update"; then
+    echo "FAIL: bin/gstack-session-update contains auto-upgrade git operations"
+    FAIL=1
+  fi
+fi
+
+# ─── No eureka.jsonl write in preamble resolver ───────────────
+if [ -f "scripts/resolvers/preamble/generate-search-before-building.ts" ]; then
+  if grep -q 'eureka\.jsonl' "scripts/resolvers/preamble/generate-search-before-building.ts"; then
+    echo "FAIL: generate-search-before-building.ts still writes to eureka.jsonl"
+    FAIL=1
+  fi
+fi
+
+# ─── No esm.sh CDN fallback in design-html ────────────────────
+if [ -f "design-html/SKILL.md.tmpl" ]; then
+  if grep -q 'esm\.sh' "design-html/SKILL.md.tmpl"; then
+    echo "FAIL: design-html/SKILL.md.tmpl still contains esm.sh CDN fallback"
+    FAIL=1
+  fi
+fi
+
 # ─── browse/src/telemetry.ts must be a no-op ─────────────────
 # v1.40+ added a browse telemetry module that writes to ~/.gstack/analytics/
 # It must be neutralized to an empty stub.
