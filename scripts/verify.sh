@@ -81,6 +81,17 @@ if [ -n "$TMPL_JSONL" ]; then
   FAIL=1
 fi
 
+# ─── No analytics writes in bin/ scripts ──────────────────────
+# post-build-fixup.mjs strips all lines (code + comments) referencing
+# analytics paths from bin/. Any match here means the fixup has a gap.
+BIN_ANALYTICS=$(grep -rn 'skill-usage\.jsonl\|\.gstack/analytics' bin/ 2>/dev/null \
+  | grep -v test/ || true)
+if [ -n "$BIN_ANALYTICS" ]; then
+  echo "FAIL: analytics write path found in bin/ scripts:"
+  echo "$BIN_ANALYTICS" | head -10 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── Telemetry bin scripts are no-ops ─────────────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check; do
   if [ -f "$script" ]; then
@@ -181,6 +192,24 @@ if [ -n "$OLD_PATH_MATCHES" ]; then
   echo "FAIL: old skills/gstack/ paths found (should be skills/gstuck/output/gstack/):"
   echo "$OLD_PATH_MATCHES" | head -10 | sed 's/^/  /'
   FAIL=1
+fi
+
+# ─── gstack-codex-probe analytics write is nulled ────────────
+# _gstack_codex_log_event must be a no-op (stripped by transform step 18)
+if [ -f bin/gstack-codex-probe ]; then
+  if grep -q 'skill-usage\.jsonl' bin/gstack-codex-probe; then
+    echo "FAIL: bin/gstack-codex-probe still contains skill-usage.jsonl write"
+    FAIL=1
+  fi
+fi
+
+# ─── design-html template has no external CDN fallback ───────
+# esm.sh CDN fallback must be stripped from design-html/SKILL.md.tmpl
+if [ -f design-html/SKILL.md.tmpl ]; then
+  if grep -q 'esm\.sh' design-html/SKILL.md.tmpl; then
+    echo "FAIL: design-html/SKILL.md.tmpl still contains esm.sh CDN URL"
+    FAIL=1
+  fi
 fi
 
 # ─── Dependency pinning checks ────────────────────────────────

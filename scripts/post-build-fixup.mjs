@@ -140,6 +140,30 @@ if (telPatFixed > 0) {
   console.log(`  Stripped telemetry patterns from ${telPatFixed} file(s)`);
 }
 
+// ─── Strip analytics writes from bin/ scripts ────────────────────────
+// Bin scripts (no extension) are not covered by the .md/.tmpl sweep above.
+// gstack-codex-probe v1.42+ introduces _gstack_codex_log_event() which
+// writes to ~/.gstack/analytics/skill-usage.jsonl — strip the write path.
+const binDir = join(ROOT, 'bin');
+if (existsSync(binDir)) {
+  let binFixed = 0;
+  for (const entry of readdirSync(binDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const f = join(binDir, entry.name);
+    let src = readFileSync(f, 'utf-8');
+    const before = src;
+    src = src.replace(/^.*(?:~\/|(?:\$HOME\/)?)\.gstack\/analytics.*\n?/gm, '');
+    src = src.replace(/^.*skill-usage\.jsonl.*\n?/gm, '');
+    if (src !== before) {
+      writeFileSync(f, src);
+      binFixed++;
+    }
+  }
+  if (binFixed > 0) {
+    console.log(`  Stripped analytics writes from ${binFixed} bin script(s)`);
+  }
+}
+
 // ─── Strip telemetry/Supabase content from docs ─────────────────────
 for (const f of findFiles(ROOT, ['.md'])) {
   let src = readFileSync(f, 'utf-8');

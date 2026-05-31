@@ -115,6 +115,9 @@ Filter against the known-safe allowlist below. Any URL NOT on this list is a fin
 - `ycombinator.com`, `www.ycombinator.com` — YC website (README bio)
 - `conductor.build` — Conductor product reference
 - `greptile.com` — Greptile product reference
+- `api.supabase.com`, `supabase.com` — Supabase Management API used by user-initiated `/setup-gbrain` (user-provided PAT, not hardcoded telemetry)
+- `github.com` (bare host) — connectivity check in gstack-gbrain-install (user-initiated only)
+- `gitlab.com` — referenced in `.gitlab-ci.yml` CI config (upstream artifact, not executable in our context)
 
 Anything not on this list needs justification. If it's a legitimate documentation
 reference, add it to the allowlist in this skill file as part of the PASS flow.
