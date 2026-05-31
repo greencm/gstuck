@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# [gstuck] Neutralized.
+exit 0

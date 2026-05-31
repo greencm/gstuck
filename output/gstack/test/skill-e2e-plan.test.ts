@@ -6,6 +6,7 @@ import {
   copyDirSync, setupBrowseShims, logCost, recordE2E,
   createEvalCollector, finalizeEvalCollector,
 } from './helpers/e2e-helpers';
+import { judgePosture } from './helpers/llm-judge';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -81,7 +82,7 @@ Focus on reviewing the plan content: architecture, error handling, security, and
       timeout: 360_000,
       testName: 'plan-ceo-review',
       runId,
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
     });
 
     logCost('/plan-ceo-review', result);
@@ -166,7 +167,7 @@ Focus on reviewing the plan content: architecture, error handling, security, and
       timeout: 360_000,
       testName: 'plan-ceo-review-selective',
       runId,
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
     });
 
     logCost('/plan-ceo-review (SELECTIVE)', result);
@@ -181,6 +182,86 @@ Focus on reviewing the plan content: architecture, error handling, security, and
       expect(review.length).toBeGreaterThan(200);
     }
   }, 420_000);
+});
+
+// --- Plan CEO Review SCOPE EXPANSION energy (V1.1 mode-posture regression gate) ---
+
+describeIfSelected('Plan CEO Review Expansion Energy E2E', ['plan-ceo-review-expansion-energy'], () => {
+  let planDir: string;
+
+  beforeAll(() => {
+    planDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-e2e-plan-ceo-exp-'));
+    const run = (cmd: string, args: string[]) =>
+      spawnSync(cmd, args, { cwd: planDir, stdio: 'pipe', timeout: 5000 });
+
+    run('git', ['init', '-b', 'main']);
+    run('git', ['config', 'user.email', 'test@test.com']);
+    run('git', ['config', 'user.name', 'Test']);
+
+    // Use the shared fixture so expansion-energy regressions are reproducible.
+    const fixture = fs.readFileSync(
+      path.join(ROOT, 'test', 'fixtures', 'mode-posture', 'expansion-plan.md'),
+      'utf-8',
+    );
+    fs.writeFileSync(path.join(planDir, 'plan.md'), fixture);
+
+    run('git', ['add', '.']);
+    run('git', ['commit', '-m', 'add plan']);
+
+    fs.mkdirSync(path.join(planDir, 'plan-ceo-review'), { recursive: true });
+    fs.copyFileSync(
+      path.join(ROOT, 'plan-ceo-review', 'SKILL.md'),
+      path.join(planDir, 'plan-ceo-review', 'SKILL.md'),
+    );
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(planDir, { recursive: true, force: true }); } catch {}
+  });
+
+  testConcurrentIfSelected('plan-ceo-review-expansion-energy', async () => {
+    const result = await runSkillTest({
+      prompt: `Read plan-ceo-review/SKILL.md for the review workflow.
+
+Read plan.md — that's the plan to review. This is a standalone plan document, not a codebase — skip any codebase exploration or system audit steps.
+
+Choose SCOPE EXPANSION mode. Skip any AskUserQuestion calls — this is non-interactive. Auto-approve the ideal-architecture approach in 0C-bis. For 0D, run all three analyses (10x check, platonic ideal, delight opportunities), then emit exactly 2 concrete expansion proposals in the opt-in ceremony.
+
+Write your expansion proposals to ${planDir}/proposals.md with ONLY the proposal text — no conversational wrapper, no review summary, no mode analysis. Each proposal separated by "---".`,
+      workingDirectory: planDir,
+      maxTurns: 15,
+      timeout: 360_000,
+      testName: 'plan-ceo-review-expansion-energy',
+      runId,
+      model: 'claude-opus-4-7',
+    });
+
+    logCost('/plan-ceo-review (EXPANSION ENERGY)', result);
+    recordE2E(evalCollector, '/plan-ceo-review-expansion-energy', 'Plan CEO Review Expansion Energy E2E', result, {
+      passed: ['success', 'error_max_turns'].includes(result.exitReason),
+    });
+    // Transient API failure escape hatch — see /plan-review-report for the
+    // full rationale. Same shape: error_api with 0 turns means the API call
+    // never reached the model, so nothing the test verifies could have run.
+    if (result.exitReason === 'error_api' && result.costEstimate?.turnsUsed === 0) {
+      console.warn('[transient] /plan-ceo-review-expansion-energy: error_api with 0 turns — treating as inconclusive');
+      return;
+    }
+    expect(['success', 'error_max_turns']).toContain(result.exitReason);
+
+    const proposalsPath = path.join(planDir, 'proposals.md');
+    if (!fs.existsSync(proposalsPath)) {
+      throw new Error('Agent did not emit proposals.md — expansion energy eval requires proposal output');
+    }
+    const proposalText = fs.readFileSync(proposalsPath, 'utf-8');
+    expect(proposalText.length).toBeGreaterThan(200);
+
+    const scores = await judgePosture('expansion', proposalText);
+    console.log('Expansion energy scores:', JSON.stringify(scores, null, 2));
+    // Pass threshold: 4/5 on both axes (good — matches posture with minor weakness).
+    expect(scores.axis_a).toBeGreaterThanOrEqual(4);  // surface_framing
+    expect(scores.axis_b).toBeGreaterThanOrEqual(4);  // decision_preservation
+  }, 600_000);
 });
 
 // --- Plan Eng Review E2E ---
@@ -259,7 +340,7 @@ Focus on architecture, code quality, tests, and performance sections.`,
       timeout: 360_000,
       testName: 'plan-eng-review',
       runId,
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
     });
 
     logCost('/plan-eng-review', result);
@@ -385,7 +466,7 @@ Write your review to ${planDir}/review-output.md`,
       timeout: 360_000,
       testName: 'plan-eng-review-artifact',
       runId,
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
     });
 
     logCost('/plan-eng-review artifact', result);
@@ -605,13 +686,25 @@ This review report at the bottom of the plan is the MOST IMPORTANT deliverable o
       timeout: 360_000,
       testName: 'plan-review-report',
       runId,
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-7',
     });
 
     logCost('/plan-eng-review report', result);
     recordE2E(evalCollector, '/plan-review-report', 'Plan Review Report E2E', result, {
       passed: ['success', 'error_max_turns'].includes(result.exitReason),
     });
+
+    // Transient API failure escape hatch: when the SDK returns error_api with
+    // zero turns / zero tokens, the API call died before the model ever ran —
+    // no skill code executed, no file was written. Bun retries the test up to
+    // 3x; if every attempt hits the same API hiccup, surface a warning and
+    // treat as inconclusive rather than gating the build on Anthropic
+    // availability. Logic regressions still surface as success/error_max_turns
+    // with a missing artifact, which the downstream assertions catch.
+    if (result.exitReason === 'error_api' && result.costEstimate?.turnsUsed === 0) {
+      console.warn('[transient] /plan-review-report: error_api with 0 turns — treating as inconclusive (likely Anthropic API hiccup, see CLAUDE.md eval-blame protocol)');
+      return;
+    }
     expect(['success', 'error_max_turns']).toContain(result.exitReason);
 
     // Verify the review report was written to the plan file
@@ -701,8 +794,8 @@ Write your summary to ${testDir}/${testName}-summary.md`,
     expect(fs.existsSync(summaryPath)).toBe(true);
 
     const summary = fs.readFileSync(summaryPath, 'utf-8').toLowerCase();
-    // All skills should have codex availability check
-    expect(summary).toMatch(/which codex/);
+    // All skills should have codex availability check (command -v per #1197)
+    expect(summary).toMatch(/command -v codex/);
     // All skills should have fallback behavior
     expect(summary).toMatch(/fallback|subagent|unavailable|not available|skip/);
     // All skills should show it's optional/non-blocking
