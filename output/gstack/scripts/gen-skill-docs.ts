@@ -16,7 +16,7 @@ import { writeLlmsTxt } from './gen-llms-txt';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Host, TemplateContext } from './resolvers/types';
-import { HOST_PATHS } from './resolvers/types';
+import { HOST_PATHS, unwrapResolver } from './resolvers/types';
 import { RESOLVERS } from './resolvers/index';
 import { externalSkillName, extractHookSafetyProse as _extractHookSafetyProse, extractNameAndDescription as _extractNameAndDescription, condenseOpenAIShortDescription as _condenseOpenAIShortDescription, generateOpenAIYaml as _generateOpenAIYaml } from './resolvers/codex-helpers';
 import { generatePlanCompletionAuditShip, generatePlanCompletionAuditReview, generatePlanVerificationExec } from './resolvers/review';
@@ -57,6 +57,41 @@ const MODEL_ARG_VAL: Model = (() => {
     throw new Error(`Unknown model: ${val}. Use ${ALL_MODEL_NAMES.join(', ')}, or a family variant (e.g., claude-opus-4-7, gpt-5.4-mini, o3).`);
   }
   return resolved;
+})();
+
+// ─── Catalog Mode (v1.45.0.0 T4) ────────────────────────────
+// 'trim' (default): shorten frontmatter description to lead sentence,
+// move routing/voice prose into a "## When to invoke" body section, and
+// emit scripts/proactive-suggestions.json (single file across all skills).
+// 'full': legacy v1.44 behavior — full description stays in frontmatter.
+const CATALOG_MODE_ARG = process.argv.find(a => a.startsWith('--catalog-mode'));
+const CATALOG_MODE: 'trim' | 'full' = (() => {
+  if (!CATALOG_MODE_ARG) return 'trim';
+  const val = CATALOG_MODE_ARG.includes('=')
+    ? CATALOG_MODE_ARG.split('=')[1]
+    : process.argv[process.argv.indexOf(CATALOG_MODE_ARG) + 1];
+  if (val !== 'trim' && val !== 'full') {
+    throw new Error(`Unknown catalog mode: ${val}. Use 'trim' (default) or 'full'.`);
+  }
+  return val;
+})();
+
+// ─── Explain-level Overlay ──────────────────────────────────
+// --explain-level=terse compresses preamble prose (writing-style, completeness,
+// confusion-protocol, context-health) to a single pointer line at gen time.
+// Default keeps the runtime-conditional behavior (sections render unconditionally,
+// the model skips them when EXPLAIN_LEVEL: terse appears in the preamble echo).
+// Opt-in via the build flag so most users get the runtime-flexible default.
+const EXPLAIN_LEVEL_ARG = process.argv.find(a => a.startsWith('--explain-level'));
+const EXPLAIN_LEVEL: 'default' | 'terse' = (() => {
+  if (!EXPLAIN_LEVEL_ARG) return 'default';
+  const val = EXPLAIN_LEVEL_ARG.includes('=')
+    ? EXPLAIN_LEVEL_ARG.split('=')[1]
+    : process.argv[process.argv.indexOf(EXPLAIN_LEVEL_ARG) + 1];
+  if (val !== 'default' && val !== 'terse') {
+    throw new Error(`Unknown explain level: ${val}. Use 'default' or 'terse'.`);
+  }
+  return val;
 })();
 
 // HostPaths, HOST_PATHS, and TemplateContext imported from ./resolvers/types (line 7-8)
@@ -171,6 +206,169 @@ function processVoiceTriggers(content: string): string {
 
 // Export for testing
 export { extractVoiceTriggers, processVoiceTriggers };
+
+// ─── Catalog Trim (v1.45.0.0 T4) ─────────────────────────────
+//
+// Frontmatter `description:` blocks today pack: a one-line outcome, "Use when
+// asked to..." voice triggers, "Proactively..." routing guidance, and a
+// "(gstack)" tag. This pile is the always-loaded catalog surface — every
+// session pays for the full text. The catalog trim splits the description
+// into a one-line catalog entry (lead sentence + "(gstack)") that stays in
+// the frontmatter, and a "## When to invoke" body section that holds the
+// routing/voice triggers prose for in-skill discovery. A registry written
+// to scripts/proactive-suggestions.json (one entry per skill) makes routing
+// available to agents that need it without paying the always-loaded cost.
+//
+// Opt-out: `--catalog-mode=full` keeps v1.44 behavior (no trim, full
+// description in frontmatter). Use when debugging routing regressions or
+// when shipping skills to hosts that depend on the legacy fat catalog.
+
+export interface CatalogParts {
+  lead: string;            // First sentence — kept in catalog
+  routingProse: string;    // "Use when asked to...", "Proactively..." paragraphs
+  voiceLine: string | null; // "Voice triggers (speech-to-text aliases): ..." line if present
+  hasGstackTag: boolean;
+}
+
+export function splitCatalogDescription(description: string): CatalogParts {
+  // Voice triggers line (folded in by processVoiceTriggers earlier)
+  const voiceMatch = description.match(/Voice triggers \(speech-to-text aliases\):[^\n]+/);
+  const voiceLine = voiceMatch ? voiceMatch[0] : null;
+  let working = voiceLine ? description.replace(voiceLine, '').trim() : description.trim();
+
+  const hasGstackTag = /\(gstack\)/.test(working);
+  if (hasGstackTag) working = working.replace(/\(gstack\)/, '').trim();
+
+  // Lead = first sentence (up to first period followed by space or end of string).
+  // We tolerate sentences with embedded periods (URLs, "v1.45.0.0") by requiring
+  // the period to be followed by whitespace OR end-of-text.
+  // First normalize to single-line for sentence detection, then back out.
+  const collapsed = working.replace(/\s+/g, ' ').trim();
+  const sentenceMatch = collapsed.match(/^([^.!?]*[.!?])(?:\s|$)/);
+  // sentenceLead is the FULL first sentence (no truncation). We compute routing
+  // from this position, then optionally truncate the displayed lead afterwards.
+  // Truncating first then computing routing was the v1.45.0.0 bug — when the
+  // first sentence exceeded 200 chars, the routing extraction would lose the
+  // entire tail of the description (design-consultation's "Use when..."
+  // routing prose silently dropped).
+  const sentenceLead = sentenceMatch ? sentenceMatch[1].trim() : collapsed.split(/\s/).slice(0, 20).join(' ');
+
+  // Routing prose: everything AFTER the first sentence boundary in the collapsed view.
+  const leadInCollapsed = collapsed.indexOf(sentenceLead);
+  const routingCollapsed = leadInCollapsed >= 0
+    ? collapsed.slice(leadInCollapsed + sentenceLead.length).trim()
+    : '';
+
+  // Now produce the displayed lead — truncated if too long. The original
+  // sentenceLead is preserved for routing extraction below.
+  let lead = sentenceLead;
+  if (lead.length > 200) {
+    const trunc = lead.slice(0, 197);
+    const lastSpace = trunc.lastIndexOf(' ');
+    lead = (lastSpace > 60 ? trunc.slice(0, lastSpace) : trunc) + '...';
+  }
+  // Restore line breaks for routing prose by mapping back to original layout.
+  // Use original whitespace structure where possible; fall back to collapsed.
+  // Anchor recovery on sentenceLead (the untruncated first sentence) — not
+  // `lead` (which may have a "..." suffix and won't substring-match `working`).
+  let routingProse = routingCollapsed;
+  const collapsedLeadIdx = working.replace(/\s+/g, ' ').indexOf(sentenceLead);
+  if (collapsedLeadIdx >= 0) {
+    let consumed = 0;
+    let cut = 0;
+    for (let i = 0; i < working.length && consumed < collapsedLeadIdx + sentenceLead.length; i++) {
+      if (/\s/.test(working[i])) {
+        if (i === 0 || /\s/.test(working[i - 1])) continue;
+        consumed += 1;
+      } else {
+        consumed += 1;
+      }
+      cut = i + 1;
+    }
+    const tail = working.slice(cut).trim();
+    if (tail.length > 0) routingProse = tail;
+  }
+
+  return { lead, routingProse, voiceLine, hasGstackTag };
+}
+
+/** Build the catalog-trimmed `description:` block. */
+export function buildTrimmedDescription(parts: CatalogParts): string {
+  const lead = parts.lead.trim();
+  const suffix = parts.hasGstackTag ? ' (gstack)' : '';
+  return `${lead}${suffix}`;
+}
+
+/** Build the body section that holds the routing/voice prose. */
+export function buildWhenToInvokeSection(parts: CatalogParts): string {
+  const lines: string[] = ['## When to invoke this skill', ''];
+  if (parts.routingProse) {
+    lines.push(parts.routingProse);
+    lines.push('');
+  }
+  if (parts.voiceLine) {
+    lines.push(parts.voiceLine);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Apply catalog trim to a SKILL.md body:
+ *  - shorten frontmatter `description:` to lead + (gstack)
+ *  - insert "## When to invoke" body section AFTER the generated header
+ *    (so it lands near the top of body content, where routing guidance
+ *    belongs)
+ *
+ * Returns the rewritten content plus the parts (used for proactive-suggestions
+ * JSON aggregation at the end of the run).
+ */
+export function applyCatalogTrim(content: string, skillName: string): { content: string; parts: CatalogParts } | null {
+  // Locate description block in frontmatter
+  if (!content.startsWith('---\n')) return null;
+  const fmEnd = content.indexOf('\n---', 4);
+  if (fmEnd === -1) return null;
+  const frontmatter = content.slice(4, fmEnd);
+
+  // Match `description: |` block + indented body lines
+  const descMatch = frontmatter.match(/^description:\s*\|?\s*\n((?:\s{2,}.*(?:\n|$))+)/m)
+                    || frontmatter.match(/^description:\s+(.+)$/m);
+  if (!descMatch) return null;
+
+  // Extract full description text
+  let descText: string;
+  if (descMatch[0].startsWith('description: |') || /^description:\s*\|/.test(descMatch[0])) {
+    descText = descMatch[1].split('\n').map(l => l.replace(/^\s{2}/, '')).join('\n').trim();
+  } else {
+    descText = descMatch[1].trim();
+  }
+
+  // Skip skills with very short descriptions (already trimmed or no routing prose).
+  // Below ~120 chars, splitting adds no value.
+  if (descText.length < 120) return null;
+
+  const parts = splitCatalogDescription(descText);
+  // If lead + (gstack) is already most of the text, no trim needed.
+  const trimmedLen = buildTrimmedDescription(parts).length;
+  if (trimmedLen >= descText.length - 20) return null;
+
+  // Replace description in frontmatter — keep trailing newline so the next
+  // YAML field doesn't collide on the same line as the description value.
+  const newDesc = buildTrimmedDescription(parts);
+  const newFrontmatter = frontmatter.replace(descMatch[0], `description: ${newDesc}\n`);
+  let newContent = '---\n' + newFrontmatter + content.slice(fmEnd);
+
+  // Insert body section after frontmatter (after the closing ---\n and any
+  // existing GENERATED header). We insert before the first non-comment line.
+  const bodyStart = newContent.indexOf('\n---\n') + 5;
+  const whenToInvoke = '\n' + buildWhenToInvokeSection(parts).trim() + '\n';
+  // Skip past the generated header if present (it lives after frontmatter close)
+  const headerMatch = newContent.slice(bodyStart).match(/^(<!--[^>]*-->\s*\n)+/);
+  const insertAt = bodyStart + (headerMatch ? headerMatch[0].length : 0);
+  newContent = newContent.slice(0, insertAt) + whenToInvoke + '\n' + newContent.slice(insertAt);
+
+  return { content: newContent, parts };
+}
 
 const OPENAI_SHORT_DESCRIPTION_LIMIT = 120;
 
@@ -401,7 +599,7 @@ function processExternalHost(
   return { content: result, outputPath, outputDir, symlinkLoop };
 }
 
-function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath: string; content: string; symlinkLoop?: boolean } {
+function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath: string; content: string; symlinkLoop?: boolean; catalogParts?: CatalogParts | null } {
   const tmplContent = fs.readFileSync(tmplPath, 'utf-8');
   const relTmplPath = path.relative(ROOT, tmplPath);
   let outputPath = tmplPath.replace(/\.tmpl$/, '');
@@ -430,7 +628,7 @@ function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath:
   const interactiveMatch = tmplContent.match(/^interactive:\s*(true|false)\s*$/m);
   const interactive = interactiveMatch ? interactiveMatch[1] === 'true' : undefined;
 
-  const ctx: TemplateContext = { skillName, tmplPath, benefitsFrom, host, paths: HOST_PATHS[host], preambleTier, model: MODEL_ARG_VAL, interactive };
+  const ctx: TemplateContext = { skillName, tmplPath, benefitsFrom, host, paths: HOST_PATHS[host], preambleTier, model: MODEL_ARG_VAL, interactive, explainLevel: EXPLAIN_LEVEL };
 
   // Replace placeholders (supports parameterized: {{NAME:arg1:arg2}})
   // Config-driven: suppressedResolvers return empty string for this host
@@ -441,9 +639,11 @@ function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath:
     const resolverName = parts[0];
     const args = parts.slice(1);
     if (suppressed.has(resolverName)) return '';
-    const resolver = RESOLVERS[resolverName];
-    if (!resolver) throw new Error(`Unknown placeholder {{${resolverName}}} in ${relTmplPath}`);
-    return args.length > 0 ? resolver(ctx, args) : resolver(ctx);
+    const entry = RESOLVERS[resolverName];
+    if (!entry) throw new Error(`Unknown placeholder {{${resolverName}}} in ${relTmplPath}`);
+    const { resolve, appliesTo } = unwrapResolver(entry);
+    if (appliesTo && !appliesTo(ctx)) return '';
+    return args.length > 0 ? resolve(ctx, args) : resolve(ctx);
   });
 
   // Check for any remaining unresolved placeholders
@@ -483,7 +683,17 @@ function processTemplate(tmplPath: string, host: Host = 'claude'): { outputPath:
     content = header + content;
   }
 
-  return { outputPath, content, symlinkLoop };
+  // Catalog trim (Claude only — external hosts have their own frontmatter shapes)
+  let catalogParts: CatalogParts | null = null;
+  if (host === 'claude' && CATALOG_MODE === 'trim') {
+    const trimmed = applyCatalogTrim(content, skillName);
+    if (trimmed) {
+      content = trimmed.content;
+      catalogParts = trimmed.parts;
+    }
+  }
+
+  return { outputPath, content, symlinkLoop, catalogParts };
 }
 
 // ─── Main ───────────────────────────────────────────────────
@@ -503,6 +713,14 @@ for (const currentHost of hostsToRun) {
     let hasChanges = false;
     const tokenBudget: Array<{ skill: string; lines: number; tokens: number }> = [];
 
+    // T4 catalog trim: collect routing/voice parts across all Claude skills,
+    // then write scripts/proactive-suggestions.json once per gen-skill-docs run.
+    const proactiveAggregate: Record<string, {
+      lead: string;
+      routing: string;
+      voice_line: string | null;
+    }> = {};
+
     const currentHostConfig = getHostConfig(currentHost);
     for (const tmplPath of findTemplates()) {
       const dir = path.basename(path.dirname(tmplPath));
@@ -516,7 +734,24 @@ for (const currentHost of hostsToRun) {
         if (currentHostConfig.generation.skipSkills.includes(dir)) continue;
       }
 
-      const { outputPath, content, symlinkLoop } = processTemplate(tmplPath, currentHost);
+      const { outputPath, content, symlinkLoop, catalogParts } = processTemplate(tmplPath, currentHost);
+      if (catalogParts) {
+        // Root-skill detection: when the template lives at ROOT/SKILL.md.tmpl,
+        // path.basename(path.dirname(tmplPath)) returns the repo's directory
+        // name (e.g. "seville-v3" in a Conductor worktree, "gstack" on CI).
+        // That's non-deterministic across machines and breaks CI freshness
+        // checks. Use the frontmatter `name` field as the registry key — the
+        // root SKILL.md.tmpl declares `name: gstack` explicitly. For all other
+        // skills, `dir` matches the directory name which matches the
+        // frontmatter name by convention.
+        const isRoot = path.dirname(tmplPath) === ROOT;
+        const key = isRoot ? 'gstack' : dir;
+        proactiveAggregate[key] = {
+          lead: catalogParts.lead,
+          routing: catalogParts.routingProse,
+          voice_line: catalogParts.voiceLine,
+        };
+      }
       const relOutput = path.relative(ROOT, outputPath);
 
       if (symlinkLoop) {
@@ -618,6 +853,40 @@ The orchestrator will persist the plan link to its own memory/knowledge store.
       console.error(`\nGenerated SKILL.md files are stale (${currentHost} host). Run: bun run gen:skill-docs --host ${currentHost}`);
       if (HOST_ARG_VAL !== 'all') process.exit(1);
       failures.push({ host: currentHost, error: new Error('Stale files detected') });
+    }
+
+    // T4 catalog trim: write aggregated proactive-suggestions.json (Claude only).
+    // The JSON registry lets agents pull voice triggers / routing prose for any
+    // skill on demand instead of paying for it always-loaded in the catalog.
+    //
+    // No timestamp field — keeps the file content-deterministic across runs so
+    // CI dry-run freshness checks don't flap on regen. If a per-run timestamp
+    // is ever needed for debugging, write it to a separate `.gen-stamp` file.
+    if (currentHost === 'claude' && CATALOG_MODE === 'trim' && Object.keys(proactiveAggregate).length > 0 && !DRY_RUN) {
+      const proactivePath = path.join(ROOT, 'scripts', 'proactive-suggestions.json');
+      // Sort keys alphabetically so the serialized JSON is identical across
+      // machines regardless of filesystem-iteration order. Without this, CI
+      // freshness checks fail when the local dev machine and CI runner
+      // discover templates in different orders.
+      const sortedSkills: typeof proactiveAggregate = {};
+      for (const key of Object.keys(proactiveAggregate).sort()) {
+        sortedSkills[key] = proactiveAggregate[key];
+      }
+      const payload = {
+        $schema: 'https://gstack.dev/schemas/proactive-suggestions.json',
+        catalog_mode: 'trim',
+        note: 'Routing / voice-trigger prose extracted from SKILL.md frontmatter descriptions during catalog trim. Loaded on demand when routing guidance is needed.',
+        skills: sortedSkills,
+      };
+      const serialized = JSON.stringify(payload, null, 2) + '\n';
+      // Only write if content actually changed — prevents needless touches that
+      // would flap CI freshness checks. Read existing file, compare, skip write
+      // when identical.
+      let existing = '';
+      try { existing = fs.readFileSync(proactivePath, 'utf-8'); } catch { /* first run */ }
+      if (existing !== serialized) {
+        fs.writeFileSync(proactivePath, serialized);
+      }
     }
 
     // Print token budget summary

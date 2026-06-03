@@ -1,9 +1,20 @@
 /**
- * RESOLVERS record — maps {{PLACEHOLDER}} names to generator functions.
+ * RESOLVERS record — maps {{PLACEHOLDER}} names to generator functions
+ * or gated entries.
+ *
  * Each resolver takes a TemplateContext and returns the replacement string.
+ * Resolvers may be either a bare function (always fires) or a gated entry
+ * ({ resolve, appliesTo }) where appliesTo can return false to skip the
+ * resolver for a given skill. See ./types.ts: ResolverEntry.
+ *
+ * Most resolvers don't need a gate — the {{NAME}} placeholder system is
+ * already conditional at the template level (the resolver only fires for
+ * skills that reference it). Use a gate when you want a structural
+ * guardrail that says "this placeholder is meaningful only in skills X, Y, Z"
+ * even if someone later adds {{NAME}} to skill W.
  */
 
-import type { TemplateContext, ResolverFn } from './types';
+import type { TemplateContext, ResolverFn, ResolverValue } from './types';
 
 // Domain modules
 import { generatePreamble } from './preamble';
@@ -24,7 +35,7 @@ import { generateQuestionPreferenceCheck, generateQuestionLog, generateInlineTun
 import { generateMakePdfSetup } from './make-pdf';
 import { generateTasksSectionEmit, generateTasksSectionAggregate } from './tasks-section';
 
-export const RESOLVERS: Record<string, ResolverFn> = {
+export const RESOLVERS: Record<string, ResolverValue> = {
   SLUG_EVAL: generateSlugEval,
   SLUG_SETUP: generateSlugSetup,
   COMMAND_REFERENCE: generateCommandReference,

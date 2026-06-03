@@ -1480,14 +1480,15 @@ describe('Skill trigger phrases', () => {
       const skillPath = path.join(ROOT, skill, 'SKILL.md');
       if (!fs.existsSync(skillPath)) return;
       const content = fs.readFileSync(skillPath, 'utf-8');
-      // Extract description from frontmatter
-      const frontmatterEnd = content.indexOf('---', 4);
-      const frontmatter = content.slice(0, frontmatterEnd);
-      expect(frontmatter).toMatch(/Use when/i);
+      // v1.45.0.0 catalog trim moved trigger prose out of frontmatter into a
+      // body "## When to invoke" section. Search the full file content, not
+      // just frontmatter. The trigger phrase must still appear somewhere in
+      // the skill so agents can match user requests to the skill.
+      expect(content).toMatch(/Use when/i);
     });
   }
 
-  // Skills with proactive triggers should have "Proactively suggest" in description
+  // Skills with proactive triggers should have "Proactively suggest" somewhere in the skill.
   const SKILLS_REQUIRING_PROACTIVE = [
     'qa', 'qa-only', 'ship', 'review', 'investigate', 'office-hours',
     'plan-ceo-review', 'plan-eng-review', 'plan-design-review',
@@ -1499,9 +1500,8 @@ describe('Skill trigger phrases', () => {
       const skillPath = path.join(ROOT, skill, 'SKILL.md');
       if (!fs.existsSync(skillPath)) return;
       const content = fs.readFileSync(skillPath, 'utf-8');
-      const frontmatterEnd = content.indexOf('---', 4);
-      const frontmatter = content.slice(0, frontmatterEnd);
-      expect(frontmatter).toMatch(/Proactively (suggest|invoke)/i);
+      // Same catalog-trim consideration — search the full file content.
+      expect(content).toMatch(/Proactively (suggest|invoke)/i);
     });
   }
 });

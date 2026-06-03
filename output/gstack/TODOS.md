@@ -1,5 +1,53 @@
 # TODOS
 
+## design daemon: follow-ups (filed v1.45.0.0 via /ship review army)
+
+### ✅ DONE (v1.45.0.0): Tighten daemon test coverage
+
+**Resolved in commit `6b037c55` (same PR):** All 5 test gaps filled before
+landing. Per-file totals after: serve 16, daemon 34, daemon-discovery 23,
+feedback-roundtrip-daemon 4 = 77 (+10 from initial ship). Specifically:
+- Idle-shutdown actually fires (spawn-based, daemon process observed exiting,
+  state file removed).
+- Bare GET polling doesn't reset idle (hammers `/api/progress` in background,
+  daemon still idles out).
+- Idle-with-active-boards extends, then force-shuts after MAX_EXTENSIONS
+  (with `DESIGN_DAEMON_EXTENSION_MS=1500` + `MAX_EXTENSIONS=2`).
+- Concurrent `ensureDaemon()` race converges on one daemon (lock wins).
+- Stale-lock reclaim (dead PID succeeds, alive unrelated PID refuses).
+- Malformed-JSON + non-object + array-body + missing-html negatives for
+  `POST /api/boards` and `POST /boards/<id>/api/reload`.
+
+### P3: Minor maintainability nits from /ship review
+
+- `design/src/cli.ts` and `design/src/serve.ts` both have a small `openBrowser`
+  helper with identical darwin/linux/else branches. Extract a shared
+  `design/src/open-browser.ts`.
+- `design/src/daemon-client.ts:320` (`AbortSignal.timeout(2000)`) and `:357`
+  (`delay(50)`) use bare numeric literals while sibling timeouts are named
+  constants. Promote to `SHUTDOWN_POST_TIMEOUT_MS` and `ALIVE_POLL_INTERVAL_MS`.
+- `design/src/daemon-state.ts:21` `serverPath` field is written
+  (`daemon.ts:541`) but never read by production code. Either remove or
+  document the forensic intent.
+
+### P3: Daemon scope deferred from v1.45.0.0 plan
+
+Originally listed in the plan's "TODOs surfaced for later" section:
+
+- Per-daemon scoped auth tokens (only relevant once a tunnel/share use case appears).
+- Optional persistent board history on disk in
+  `~/.gstack/projects/$SLUG/designs/history/` so submitted boards survive
+  daemon restarts.
+- Windows spawn branch lifted from browse (V1 daemon is macOS + Linux;
+  Windows users fall back to legacy `--no-daemon` per-process server).
+- `$D board list` / `$D board stop <id>` per-board ops CLI (V1 has only
+  `$D daemon status` / `stop`).
+- Cross-worktree daemon attach (conductor sibling worktrees of the same
+  repo currently each spawn their own daemon — matches browse; revisit
+  if it causes friction).
+
+---
+
 ## browse server: terminal-agent teardown follow-ups (filed v1.41 via /plan-eng-review)
 
 ### ✅ DONE (v1.44.0.0): Identity-based terminal-agent kill (replace pkill regex with PID)
@@ -1717,6 +1765,49 @@ Shipped in v0.6.5. TemplateContext in gen-skill-docs.ts bakes skill name into pr
 **Effort:** XL (human: ~1 quarter / CC: ~2-3 weeks of focused work)
 **Priority:** P2
 **Depends on:** CDP patches proving the value of anti-bot stealth first
+
+## /spec follow-ups (deferred from v1.47.0.0 via /plan-ceo-review SCOPE EXPANSION)
+
+### P2: `/spec --epic` mode (parent issue + child issues + dependency graph)
+
+**Priority:** P2
+
+**What:** Add `--epic` flag that produces an Epic issue (parent) plus N child issues with explicit dependency graph and topological order. Emits multiple `gh issue create` calls with parent linkage in child bodies.
+
+**Why:** Multi-week initiatives often span 3-5 specs that share context but ship sequentially. Today `/spec --epic` would let users author the full initiative in one session and file all linked issues atomically. The Epic template already exists in `spec/SKILL.md.tmpl` (carried over from PR #1698); only the flag routing + multi-issue `gh` orchestration is missing.
+
+**Pros:**
+- Closes the multi-issue workflow gap that `/spec` v1 doesn't cover.
+- Parent + child linkage means project boards show the full initiative at-a-glance.
+- Composes cleanly with existing `--execute` (spawn an agent on the parent epic; agent files children as it works).
+
+**Cons:**
+- More gh API surface (one create per child, parent-link edit pass).
+- Dependency-graph rendering in markdown is fiddly across GitHub vs GitLab renderers.
+
+**Context:** Considered in `/plan-ceo-review` SCOPE EXPANSION (D5), deferred 2026-05-25 in favor of shipping the 5 critical-path expansions (--execute, --dedupe, archive, quality gate, --audit). Re-evaluate once v1.47 ships and we see how often users hit "this should be 3 issues" in real /spec sessions.
+
+**Depends on:** v1.47.0.0 `/spec` lands first; need real usage data to calibrate the multi-issue surface.
+
+### P3: `/spec --dedupe` semantic matching (LLM-based) for v1.1
+
+**Priority:** P3
+
+**What:** Upgrade `--dedupe`'s string match against `gh issue list --search` to LLM-based semantic similarity. Today's v1 picks string overlap on title keywords; semantic match would catch "the sidebar terminal flakes on reload" matching an existing issue titled "PTY reconnect fails after extension restart" where keyword overlap is zero.
+
+**Why:** String match has high precision but low recall — it misses near-duplicates with different vocabulary. LLM semantic match catches more dupes but costs ~$0.01-0.05 per spec dispatch and adds 5-10s latency.
+
+**Pros:**
+- Catches dupes string match misses.
+- One more reason `/spec` is more useful than freehand authoring.
+
+**Cons:**
+- Paid + slower. Most v1 users probably don't hit enough false-negatives to justify the cost.
+- Adds another LLM-judged decision to a skill that already has the quality gate.
+
+**Context:** Considered in `/plan-ceo-review` build-time decisions; chose string match for v1 to keep the dedupe path free + fast. Revisit if v1 produces a meaningful false-negative rate in real use.
+
+**Depends on:** v1.47.0.0 ships; gather real false-negative data from the v1 string matcher.
 
 ## Completed
 

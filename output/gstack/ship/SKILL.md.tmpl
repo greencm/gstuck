@@ -865,6 +865,39 @@ you missed it.>
 <If no plan file: "No plan file detected.">
 <If plan items deferred: list deferred items>
 
+## Linked Spec
+<Auto-detect: look for /spec archives matching this branch via:
+  eval "$(${ctx.paths.binDir}/gstack-paths)"
+  eval "$(${ctx.paths.binDir}/gstack-slug)"
+  CURRENT_BRANCH=$(git branch --show-current)
+  SPEC_ARCHIVES="$GSTACK_STATE_ROOT/projects/$SLUG/specs"
+  # Find newest archive whose spec_branch frontmatter matches current branch (or one of its
+  # parents — if spec spawned worktree spec/<slug>-$$, the spawned worktree IS where /ship runs).
+  SPEC_FILE=$(grep -l "^spec_branch: $CURRENT_BRANCH$" "$SPEC_ARCHIVES"/*.md 2>/dev/null | head -1)
+  [ -z "$SPEC_FILE" ] && exit  # no spec; omit this section entirely
+  SPEC_ISSUE=$(grep "^spec_issue_number:" "$SPEC_FILE" | cut -d' ' -f2)
+  [ -z "$SPEC_ISSUE" ] && exit  # spec archive exists but no issue number; omit
+
+  # CONDITIONAL Closes #N (codex F4): only add when Plan Completion above is "complete".
+  # If the plan completion gate from Step 8 reports any deferred or failed items, emit:
+  #   "Linked to #$SPEC_ISSUE (partial delivery — NOT auto-closing; close manually after follow-up)"
+  # If Plan Completion is fully complete, emit:
+  #   "Closes #$SPEC_ISSUE"
+  # and include the Closes #N line in the PR body so GitHub auto-closes on merge.>
+
+<Format:
+  Closes #<N>
+
+  This PR delivers the spec at <archive path relative to repo root>.
+  Spec filed: <spec_filed_at from frontmatter>>
+
+<If partial delivery, emit instead:
+  Linked to #<N> (partial delivery — not auto-closing).
+  Deferred items: <list from Plan Completion>.
+  Close #<N> manually after follow-up lands.>
+
+<If no /spec archive matches this branch: omit this entire section.>
+
 ## Verification Results
 <If verification ran: summary from Step 8.1 (N PASS, M FAIL, K SKIPPED)>
 <If skipped: reason (no plan, no server, no verification section)>
