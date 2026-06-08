@@ -169,6 +169,18 @@ if [ -f "browse/src/telemetry.ts" ]; then
   fi
 fi
 
+# ─── browse/src/security.ts reportAttemptTelemetry must be a no-op ───
+# v1.45+ added a security module that spawns gstack-telemetry-log with
+# attack_attempt events. The function must be nulled to prevent the live
+# call from finding a real binary if upstream gstack is also installed.
+if [ -f "browse/src/security.ts" ]; then
+  if grep -A10 'function reportAttemptTelemetry' "browse/src/security.ts" \
+      | grep -q 'findTelemetryBinary\|spawn\|spawnSync'; then
+    echo "FAIL: browse/src/security.ts has active reportAttemptTelemetry body"
+    FAIL=1
+  fi
+fi
+
 # ─── No telemetry prompt in gen-skill-docs.ts ─────────────────
 if [ -f "scripts/gen-skill-docs.ts" ]; then
   if grep -q 'Help gstack get better' "scripts/gen-skill-docs.ts"; then

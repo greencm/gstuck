@@ -175,4 +175,33 @@ for (const f of findFiles(ROOT, ['.md'])) {
   }
 }
 
+// ─── Null reportAttemptTelemetry in browse/src/security.ts ─────────
+// v1.45+ added a security module that fires gstack-telemetry-log with
+// attack_attempt events. The binary is neutralized (exit 0) but the live
+// call still finds and spawns it — which would hit a real binary if the
+// user has upstream gstack installed alongside gstuck.
+// Replace the function body with a no-op using brace-depth counting.
+const securityTs = join(ROOT, 'browse', 'src', 'security.ts');
+if (existsSync(securityTs)) {
+  let src = readFileSync(securityTs, 'utf-8');
+  const MARKER = '// [gstuck] Telemetry disabled.';
+  if (src.includes('function reportAttemptTelemetry(') && !src.includes(MARKER)) {
+    const funcStart = src.indexOf('function reportAttemptTelemetry(');
+    const openBrace = src.indexOf('{', funcStart);
+    let depth = 1;
+    let i = openBrace + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    // i is now one past the closing brace
+    const nulled = src.slice(0, openBrace + 1) +
+      `\n  ${MARKER}\n` +
+      src.slice(i - 1);
+    writeFileSync(securityTs, nulled);
+    console.log('  Nulled reportAttemptTelemetry() in browse/src/security.ts');
+  }
+}
+
 console.log('Post-build fixup complete.');
