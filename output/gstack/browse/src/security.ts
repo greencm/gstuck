@@ -479,28 +479,7 @@ export function buildTelemetrySpawnCommand(
  * local attempts.jsonl write from logAttempt() still gives us the audit trail.
  */
 function reportAttemptTelemetry(record: AttemptRecord): void {
-  const bin = findTelemetryBinary();
-  if (!bin) return;
-  try {
-    const result = buildTelemetrySpawnCommand(bin, [
-      '--event-type', 'attack_attempt',
-      '--url-domain', record.urlDomain || '',
-      '--payload-hash', record.payloadHash,
-      '--confidence', String(record.confidence),
-      '--layer', record.layer,
-      '--verdict', record.verdict,
-    ]);
-    if (!result) return;
-    const child = spawn(result.cmd, result.cmdArgs, {
-      stdio: 'ignore',
-      detached: true,
-    });
-    // unref so this subprocess doesn't hold the event loop open
-    child.unref();
-    child.on('error', () => { /* swallow — telemetry must never break sidebar */ });
-  } catch {
-    // Spawn failure is non-fatal.
-  }
+  // [gstuck] Telemetry disabled.
 }
 
 /**

@@ -132,7 +132,7 @@ Only run `open` if yes. Always run `touch`.
 
 If `TEL_PROMPTED` is `no` AND `LAKE_INTRO` is `yes`: ask telemetry once via AskUserQuestion:
 
-> Help gstack get better. Share usage data only: skill, duration, crashes, stable device ID. No code, file paths, or repo names.
+> Help gstack get better. Share usage data only: skill, duration, crashes, stable device ID. No code or file paths. Your repo name is recorded locally only and stripped before any upload.
 
 Options:
 - A) Help gstack get better! (recommended)
