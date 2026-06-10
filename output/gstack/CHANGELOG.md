@@ -1,4 +1,4 @@
-## gstuck (based on upstream v1.55.0.0, sanitized 2026-06-07)
+## gstuck (based on upstream v1.55.1.0, sanitized 2026-06-10)
 
 ### Removed
 - Supabase telemetry system (all phone-home calls to frugpmstpnojnhfyimgv.supabase.co)
@@ -19,6 +19,44 @@
 ---
 
 # Changelog
+
+## [1.55.1.0] - 2026-06-02
+
+## **Telemetry now tells you exactly what it records and where it stays. The project-slug helper hands the shell a safe identifier on every path.**
+
+The telemetry opt-in screen now states the truth without asterisks: it shares skill name, duration, crashes, and a stable device ID, with no code and no file paths, and your repo name is recorded locally only and stripped before any upload. Under the hood, the helper that every skill uses to find your project (`gstack-slug`) now filters its output to `[a-zA-Z0-9._-]` on every path, including the cached one, so the value that gets handed to the shell is always a plain identifier. Two regression tests lock both behaviors so they can't quietly drift back.
+
+### The guarantees that matter
+
+These are enforced by tests in this release, not promises (`bun test test/telemetry-repo-strip.test.ts test/gstack-slug-sanitize.test.ts`):
+
+| Guarantee | Pinned by |
+|-----------|-----------|
+| Your repo name never leaves the machine (stripped before upload) | `telemetry-repo-strip.test.ts` — floor + producer-coverage + runs the real strip over a sample event |
+| A tampered slug cache can't put shell characters into the helper's output | `gstack-slug-sanitize.test.ts` — fails if the sanitization is removed |
+| The consent copy matches what the code actually does | `generate-telemetry-prompt.ts` (regenerated into every skill) |
+
+The repo-identity test covers all three producer fields (`repo`, `_repo_slug`, `_branch`), so adding a new field that forgets to get stripped fails CI rather than shipping silently.
+
+### What this means for you
+
+Your telemetry choice screen now describes what actually happens, so you can opt in (or not) on accurate information. If you share a machine or have ever worried about a tampered `~/.gstack` cache, the slug helper now refuses to pass anything but a safe identifier to the shell. Nothing to do — both land automatically on upgrade.
+
+### Itemized changes
+
+#### Changed
+- Telemetry consent copy is now accurate: "No code or file paths. Your repo name is recorded locally only and stripped before any upload" (was "No code, file paths, or repo names").
+
+#### Fixed
+- `gstack-slug` sanitizes its output to `[a-zA-Z0-9._-]` on every path, including values read from its on-disk cache, so `eval "$(gstack-slug)"` always receives a plain identifier. A tampered cache file is also healed on the next write.
+- The telemetry preamble sanitizes the repo basename before building its JSON line, so an unusual repo directory name can't malform the local analytics record.
+
+#### Added
+- `test/telemetry-repo-strip.test.ts` — enforces that no repo/branch identity field reaches the upload batch (floor + producer-coverage + real-strip behavior).
+- `test/gstack-slug-sanitize.test.ts` — regression test proving a poisoned slug cache cannot inject shell metacharacters.
+
+#### For contributors
+- The consent copy and repo-basename handling live in `scripts/resolvers/preamble/`; all `SKILL.md` files and the ship goldens were regenerated from those resolvers.
 
 ## [1.55.0.0] - 2026-05-30
 
