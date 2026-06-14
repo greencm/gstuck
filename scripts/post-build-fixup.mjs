@@ -164,6 +164,23 @@ if (existsSync(binDir)) {
   }
 }
 
+// ─── Strip ycombinator.com/apply from generated output ──────────────
+// Belt-and-suspenders: transforms.mjs sanitizes .tmpl pre-build, but if
+// the build ever regenerates content we also catch it here in the output.
+let ycFixed = 0;
+for (const f of findFiles(ROOT, ['.md', '.tmpl'])) {
+  let src = readFileSync(f, 'utf-8');
+  const before = src;
+  src = src.replace(/^.*ycombinator\.com\/apply.*\n?/gm, '');
+  if (src !== before) {
+    writeFileSync(f, src);
+    ycFixed++;
+  }
+}
+if (ycFixed > 0) {
+  console.log(`  Stripped ycombinator.com/apply from ${ycFixed} file(s)`);
+}
+
 // ─── Strip telemetry/Supabase content from docs ─────────────────────
 for (const f of findFiles(ROOT, ['.md'])) {
   let src = readFileSync(f, 'utf-8');

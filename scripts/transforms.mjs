@@ -342,8 +342,10 @@ for (const f of findFiles(ROOT, ['.ts', '.tmpl', '.md'], ['node_modules', '.git'
 console.log('  Removed garryslist.org references');
 
 // ─── Step 11: Remove ycombinator.com/apply from all files ─────
+// Also covers .tmpl files — the build regenerates .md from .tmpl, so the
+// template must be sanitized first or the output inherits the banned link.
 
-for (const f of findFiles(ROOT, ['.md', '.ts'], ['node_modules', '.git'])) {
+for (const f of findFiles(ROOT, ['.md', '.ts', '.tmpl'], ['node_modules', '.git'])) {
   removeLines(f, [/.*ycombinator\.com\/apply.*/g]);
 }
 console.log('  Removed ycombinator.com/apply references');
