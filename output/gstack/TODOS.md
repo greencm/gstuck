@@ -19,6 +19,38 @@ v1.47.0.0 baselines retained in `test/fixtures/` for the v1→v2 audit trail. Th
 captured skill bytes match `origin/main` exactly (the rebasing branch left every
 SKILL.md untouched). `bun test` is green again.
 
+## Token-reduction follow-ups (Phase B, filed via /plan-eng-review on the plan-ceo-review carve)
+
+### P3: Carve the always-loaded `{{PREAMBLE}}` reference blocks into an on-demand doc
+
+**What:** The per-skill section carves (`/ship` v1.54, `/plan-ceo-review` v1.56) yield
+real but bounded wins (-42% to -59% on the carved skill) because the shared
+`{{PREAMBLE}}` (~40-50KB on every tier-3/4 skill) is the dominant always-loaded cost
+and stays inline. Move the rarely-needed preamble REFERENCE blocks (the AskUserQuestion
+split-rules and the CJK / lone-surrogate escaping reference) into an on-demand
+section-style doc the agent reads only when it hits those edge cases, leaving the hot
+path (voice, completeness principle, recommendation format) inline.
+
+**Why:** Highest-ROI remaining token target. One preamble carve helps EVERY tier-≥2
+skill at once, not one skill per PR. The eng-review on the plan-ceo carve flagged that
+per-skill carves stay modest precisely because the preamble dominates the always-loaded
+surface.
+
+**Pros:** A single change reduces always-loaded cost across the whole skill pack.
+**Cons:** The preamble is load-bearing and shared; a botched carve regresses every skill.
+Needs the same union-parity + per-push freshness guards the section carves use, applied
+corpus-wide.
+
+**Context:** Builds on the v2 section pipeline (`scripts/resolvers/sections.ts`,
+`{{SECTION:id}}` / `{{SECTION_INDEX}}`). The preamble source is
+`scripts/resolvers/preamble.ts`. Measure which sub-blocks are cold (escaping reference,
+split-rules) vs hot (voice, recommendation format) before cutting. Validate on one skill,
+then roll corpus-wide.
+
+**Effort estimate:** L (human team) → M (CC+gstack)
+**Priority:** P3
+**Depends on / blocked by:** The section pipeline (shipped v1.54). No hard blocker.
+
 ## gbrowser memory follow-ups (filed via /plan-eng-review + /codex on the v1.49 leak-fix PR)
 
 These four items came out of the memory-leak investigation that shipped
@@ -2249,3 +2281,53 @@ into `test/helpers/fake-gbrain.ts` when the second consumer arrives
 runs).
 
 **Depends on:** None.
+
+### P2: Real-session carve canary (E3, deferred from carve-guard plan)
+
+**What:** Wire a real-session section-Read-miss canary on top of the
+carved skills. When a real user session drives a carved skill and the
+agent does NOT Read a section the skeleton's STOP directive pointed it
+at, log it (salted, content-free) to
+`bun run eval:summary`. Non-blocking alert, never a merge gate
+(real-session data is non-deterministic).
+
+**Why:** The static (E2) + behavioral (T2) guards prove carves are
+structurally sound and that a real agent Reads sections in a controlled
+eval. They do NOT see production drift — a prompt-context change that
+makes live agents start skipping a section. The canary is the only
+mechanism that catches that, from real usage.
+
+**Context:** Deferred from the carve-guard-hardening plan (D5→T2, codex
+outside-voice #7). `test/helpers/transcript-section-logger.ts` exists but
+is built for deterministic test transcripts + ship action fingerprints,
+NOT real-session drift — it needs rework before it can back this. Ship
+the deterministic guards first; add this once they've proven useful. The
+carved-skill set + each skill's `requiredReads` are already declared in
+`test/helpers/carve-guards.ts`, so the canary reads its expectations
+from there.
+
+**Effort:** M (human ~2d, CC ~4h).
+
+**Depends on:** `transcript-section-logger.ts` real-session-drift rework.
+
+### P2: Harden behavioral section-loading test hermeticity
+
+**What:** `captureSectionReads` in `test/helpers/auq-sdk-capture.ts` accepts ANY
+Read whose path matches `sections/<file>.md`. The skeleton's STOP-Read directive
+points at the gstack-root install path (`scripts/resolvers/sections.ts` builds it
+from `ctx.paths.skillRoot`), not the planted fixture copy. So a run can satisfy
+the section-read assertion by reading the GLOBAL install's section instead of the
+hermetic fixture.
+
+**Why:** A behavioral test that passes by reading the global install doesn't prove
+THIS branch's carved section loads. If the fixture's section were broken but the
+global install's weren't, the test would still pass.
+
+**Context:** Codex outside-voice finding on the carve-guard ship (v1.57.0.0).
+Pre-existing in `auq-sdk-capture.ts` — affects `skill-e2e-ship-section-loading`,
+`skill-e2e-plan-ceo-review-section-loading`, and the new
+`carve-section-loading.test.ts`. Fix: match the fixture's ABSOLUTE sections path
+(the `planDir` copy), not a bare `sections/<file>.md` regex; or rewrite the STOP
+path to the fixture during the run.
+
+**Effort:** S (human ~3h, CC ~30min). **Depends on:** None.

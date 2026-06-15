@@ -76,6 +76,9 @@ echo "SKILL_PREFIX: $_SKILL_PREFIX"
 source <(~/.claude/skills/gstuck/output/gstack/bin/gstack-repo-mode 2>/dev/null) || true
 REPO_MODE=${REPO_MODE:-unknown}
 echo "REPO_MODE: $REPO_MODE"
+_SESSION_KIND=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-session-kind 2>/dev/null || echo "interactive")
+case "$_SESSION_KIND" in spawned|headless|interactive) ;; *) _SESSION_KIND="interactive" ;; esac
+echo "SESSION_KIND: $_SESSION_KIND"
 _EXPLAIN_LEVEL=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get explain_level 2>/dev/null || echo "default")
 if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then _EXPLAIN_LEVEL="default"; fi
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
@@ -132,7 +135,7 @@ In plan mode, allowed because they inform the plan: `$B`, `$D`, `codex exec`/`co
 
 ## Skill Invocation During Plan Mode
 
-If the user invokes a skill in plan mode, the skill takes precedence over generic plan mode behavior. **Treat the skill file as executable instructions, not reference.** Follow it step by step starting from Step 0; the first AskUserQuestion is the workflow entering plan mode, not a violation of it. AskUserQuestion (any variant — `mcp__*__AskUserQuestion` or native; see "AskUserQuestion Format → Tool resolution") satisfies plan mode's end-of-turn requirement. If no variant is callable, the skill is BLOCKED — stop and report `BLOCKED — AskUserQuestion unavailable` per the AskUserQuestion Format rule. At a STOP point, stop immediately. Do not continue the workflow or call ExitPlanMode there. Commands marked "PLAN MODE EXCEPTION — ALWAYS RUN" execute. Call ExitPlanMode only after the skill workflow completes, or if the user tells you to cancel the skill or leave plan mode.
+If the user invokes a skill in plan mode, the skill takes precedence over generic plan mode behavior. **Treat the skill file as executable instructions, not reference.** Follow it step by step starting from Step 0; the first AskUserQuestion is the workflow entering plan mode, not a violation of it. AskUserQuestion (any variant — `mcp__*__AskUserQuestion` or native; see "AskUserQuestion Format → Tool resolution") satisfies plan mode's end-of-turn requirement. If AskUserQuestion is unavailable or a call fails, follow the AskUserQuestion Format failure fallback: `headless` → BLOCKED; `interactive` → the prose fallback (also satisfies end-of-turn). At a STOP point, stop immediately. Do not continue the workflow or call ExitPlanMode there. Commands marked "PLAN MODE EXCEPTION — ALWAYS RUN" execute. Call ExitPlanMode only after the skill workflow completes, or if the user tells you to cancel the skill or leave plan mode.
 
 If `WRITING_STYLE_PENDING` is `yes`: ask once about writing style:
 
@@ -235,11 +238,31 @@ AI orchestrator (e.g., OpenClaw). In spawned sessions:
 
 **Rule:** if any `mcp__*__AskUserQuestion` variant is in your tool list, prefer it. Hosts may disable native AUQ via `--disallowedTools AskUserQuestion` (Conductor does, by default) and route through their MCP variant; calling native there silently fails. Same questions/options shape; same decision-brief format applies.
 
-**If no AskUserQuestion variant appears in your tool list, this skill is BLOCKED.** Stop, report `BLOCKED — AskUserQuestion unavailable`, and wait for the user. Do not write decisions to the plan file as a substitute, do not emit them as prose and stop, and do not silently auto-decide (only `/plan-tune` AUTO_DECIDE opt-ins authorize auto-picking).
+If AskUserQuestion is unavailable (no variant in your tool list) OR a call to it fails, do NOT silently auto-decide or write the decision to the plan file as a substitute. Follow the **failure fallback** below.
+
+### When AskUserQuestion is unavailable or a call fails
+
+Tell three outcomes apart:
+
+1. **Auto-decide denial (NOT a failure).** The result contains `[plan-tune auto-decide] <id> → <option>` — the preference hook working as designed. Proceed with that option. Do NOT retry, do NOT fall back to prose.
+2. **Genuine failure** — no variant in your tool list, OR the variant is present but the call returns an error / missing result (MCP transport error, empty result, host bug — e.g. Conductor's MCP AskUserQuestion is flaky and returns `[Tool result missing due to internal error]`).
+   - If it was present and **errored** (not absent), retry the SAME call **once** — but only if no answer could have surfaced (a missing-result error can arrive after the user already saw the question; retrying would double-prompt, so if it may have reached them, treat as pending, don't retry).
+   - Then branch on `SESSION_KIND` (echoed by the preamble; empty/absent ⇒ `interactive`):
+     - `spawned` → defer to the **Spawned session** block: auto-choose the recommended option. Never prose, never BLOCKED.
+     - `headless` → `BLOCKED — AskUserQuestion unavailable`; stop and wait (no human can answer).
+     - `interactive` → **prose fallback** (below).
+
+**Prose fallback — render the decision brief as a markdown message, not a tool call.** Same information as the tool format below, different structure (paragraphs, not ✅/❌ bullets). It MUST surface this triad:
+
+1. **A clear ELI10 of the issue itself** — plain English on what's being decided and why it matters (the question, not per-choice), naming the stakes. Lead with it.
+2. **Completeness scores per choice** — explicit `Completeness: X/10` on EACH choice (10 complete, 7 happy-path, 3 shortcut); use the kind-note when options differ in kind not coverage, but never silently drop the score.
+3. **The recommendation and why** — a `Recommendation: <choice> because <reason>` line plus the `(recommended)` marker on that choice.
+
+Layout: a `D<N>` title + a one-line note that AskUserQuestion failed and to reply with a letter; the issue ELI10; the Recommendation line; then ONE paragraph per choice carrying its `(recommended)` marker, its `Completeness: X/10`, and 2-4 sentences of reasoning — never a bare bullet list; a closing `Net:` line. Split chains / 5+ options: one prose block per per-option call, in sequence. Then STOP and wait — the user's typed answer is the decision. In plan mode this satisfies end-of-turn like a tool call.
 
 ### Format
 
-Every AskUserQuestion is a decision brief and must be sent as tool_use, not prose.
+Every AskUserQuestion is a decision brief and must be sent as tool_use, not prose — unless the documented failure fallback above applies (interactive session + the call is unavailable/erroring), in which case the prose fallback is the correct output.
 
 ```
 D<N> — <one-line question title>
@@ -301,25 +324,12 @@ so split chains are never AUTO_DECIDE-eligible — the user's option set is sacr
 **Full rule + worked examples + Hold/dependency semantics:** see
 `docs/askuserquestion-split.md` in the gstack repo. Read on demand when N>4.
 
-**Non-ASCII characters — write directly, never \u-escape.** When any
-    string field (question, option label, option description) contains
-    Chinese (繁體/簡體), Japanese, Korean, or other non-ASCII text, emit
-    the literal UTF-8 characters in the JSON string. **Never escape them
-    as `\uXXXX`.** Claude Code's tool parameter pipe is UTF-8 native
-    and passes characters through unchanged. Manually escaping requires
-    recalling each codepoint from training, which is unreliable for long
-    CJK strings — the model regularly emits the wrong codepoint (e.g.
-    writes `\u3103` thinking it is 管 U+7BA1, but `\u3103` is
-    actually ㄃, so the user sees `管理工具` rendered as `㄃3用箱`).
-    The trigger is long, multi-line questions with hundreds of CJK
-    characters: that is exactly when reflexive escaping kicks in and
-    exactly when miscoding is most damaging. Long ≠ escape. Keep
-    characters literal.
-
-    Wrong: `"question": "請選擇\uXXXX\uXXXX\uXXXX\uXXXX"`
-    Right: `"question": "請選擇管理工具"`
-
-    Only JSON-mandatory escapes remain allowed: `\n`, `\t`, `\"`, `\\`.
+**Non-ASCII characters — write directly, never \u-escape.** When any string
+field contains Chinese (繁體/簡體), Japanese, Korean, or other non-ASCII text,
+emit the literal UTF-8 characters; never escape them as `\uXXXX` (the pipe is
+UTF-8 native, and manual escaping miscodes long CJK strings). Only `\n`,
+`\t`, `\"`, `\\` remain allowed. Full rationale + worked example: see
+`docs/askuserquestion-cjk.md`. Read on demand when a question contains CJK.
 
 ### Self-check before emitting
 
@@ -332,7 +342,7 @@ Before calling AskUserQuestion, verify:
 - [ ] (recommended) label on one option (even for neutral-posture)
 - [ ] Dual-scale effort labels on effort-bearing options (human / CC)
 - [ ] Net line closes the decision
-- [ ] You are calling the tool, not writing prose
+- [ ] You are calling the tool, not writing prose — unless the documented failure fallback applies (then: prose with the mandatory triad — issue ELI10, per-choice Completeness, Recommendation + `(recommended)` — and a "reply with a letter" instruction, then STOP)
 - [ ] Non-ASCII characters (CJK / accents) written directly, NOT \u-escaped
 - [ ] If you had 5+ options, you split (or batched into ≤4-groups) — did NOT drop any
 - [ ] If you split, you checked dependencies between options before firing the chain
@@ -802,6 +812,18 @@ smarter on their codebase over time.
 
 Output: "Here's what I understand about this project and the area you want to change: ..."
 
+---
+
+
+---
+## Section index — Read each section when its situation applies
+
+This skill is a decision-tree skeleton. The steps below point to on-demand
+sections. Read a section in full before doing its step; do not work from memory.
+
+| When | Read this section |
+|------|-------------------|
+| writing the design doc and running the tiered relationship handoff (Phases 5-6, after the conversation and alternatives are done) | `sections/design-and-handoff.md` |
 ---
 
 ## Phase 2A: Startup Mode — YC Product Diagnostic
@@ -1444,333 +1466,12 @@ selection in Phase 6 Beat 3.5.
 
 ---
 
-## Phase 5: Design Doc
+> **STOP.** Before writing the design doc and running the tiered relationship handoff (Phases 5-6, after the conversation and alternatives are done), Read `~/.claude/skills/gstuck/output/gstack/office-hours/sections/design-and-handoff.md` and execute it
+> in full. Do not work from memory — that section is the source of truth for this step.
 
-Write the design document to the project directory.
+## Section self-check (before you finish)
 
-```bash
-eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" && mkdir -p ~/.gstack/projects/$SLUG
-USER=$(whoami)
-DATETIME=$(date +%Y%m%d-%H%M%S)
-```
-
-**Design lineage:** Before writing, check for existing design docs on this branch:
-```bash
-setopt +o nomatch 2>/dev/null || true  # zsh compat
-PRIOR=$(ls -t ~/.gstack/projects/$SLUG/*-$BRANCH-design-*.md 2>/dev/null | head -1)
-```
-If `$PRIOR` exists, the new doc gets a `Supersedes:` field referencing it. This creates a revision chain — you can trace how a design evolved across office hours sessions.
-
-Write to `~/.gstack/projects/{slug}/{user}-{branch}-design-{datetime}.md`.
-
-After writing the design doc, tell the user:
-**"Design doc saved to: {full path}. Other skills (/plan-ceo-review, /plan-eng-review) will find it automatically."**
-
-### Startup mode design doc template:
-
-```markdown
-# Design: {title}
-
-Generated by /office-hours on {date}
-Branch: {branch}
-Repo: {owner/repo}
-Status: DRAFT
-Mode: Startup
-Supersedes: {prior filename — omit this line if first design on this branch}
-
-## Problem Statement
-{from Phase 2A}
-
-## Demand Evidence
-{from Q1 — specific quotes, numbers, behaviors demonstrating real demand}
-
-## Status Quo
-{from Q2 — concrete current workflow users live with today}
-
-## Target User & Narrowest Wedge
-{from Q3 + Q4 — the specific human and the smallest version worth paying for}
-
-## Constraints
-{from Phase 2A}
-
-## Premises
-{from Phase 3}
-
-## Cross-Model Perspective
-{If second opinion ran in Phase 3.5 (Codex or Claude subagent): independent cold read — steelman, key insight, challenged premise, prototype suggestion. Verbatim or close paraphrase. If second opinion did NOT run (skipped or unavailable): omit this section entirely — do not include it.}
-
-## Approaches Considered
-### Approach A: {name}
-{from Phase 4}
-### Approach B: {name}
-{from Phase 4}
-
-## Recommended Approach
-{chosen approach with rationale}
-
-## Open Questions
-{any unresolved questions from the office hours}
-
-## Success Criteria
-{measurable criteria from Phase 2A}
-
-## Distribution Plan
-{how users get the deliverable — binary download, package manager, container image, web service, etc.}
-{CI/CD pipeline for building and publishing — GitHub Actions, manual release, auto-deploy on merge?}
-{omit this section if the deliverable is a web service with existing deployment pipeline}
-
-## Dependencies
-{blockers, prerequisites, related work}
-
-## The Assignment
-{one concrete real-world action the founder should take next — not "go build it"}
-
-## What I noticed about how you think
-{observational, mentor-like reflections referencing specific things the user said during the session. Quote their words back to them — don't characterize their behavior. 2-4 bullets.}
-```
-
-### Builder mode design doc template:
-
-```markdown
-# Design: {title}
-
-Generated by /office-hours on {date}
-Branch: {branch}
-Repo: {owner/repo}
-Status: DRAFT
-Mode: Builder
-Supersedes: {prior filename — omit this line if first design on this branch}
-
-## Problem Statement
-{from Phase 2B}
-
-## What Makes This Cool
-{the core delight, novelty, or "whoa" factor}
-
-## Constraints
-{from Phase 2B}
-
-## Premises
-{from Phase 3}
-
-## Cross-Model Perspective
-{If second opinion ran in Phase 3.5 (Codex or Claude subagent): independent cold read — coolest version, key insight, existing tools, prototype suggestion. Verbatim or close paraphrase. If second opinion did NOT run (skipped or unavailable): omit this section entirely — do not include it.}
-
-## Approaches Considered
-### Approach A: {name}
-{from Phase 4}
-### Approach B: {name}
-{from Phase 4}
-
-## Recommended Approach
-{chosen approach with rationale}
-
-## Open Questions
-{any unresolved questions from the office hours}
-
-## Success Criteria
-{what "done" looks like}
-
-## Distribution Plan
-{how users get the deliverable — binary download, package manager, container image, web service, etc.}
-{CI/CD pipeline for building and publishing — or "existing deployment pipeline covers this"}
-
-## Next Steps
-{concrete build tasks — what to implement first, second, third}
-
-## What I noticed about how you think
-{observational, mentor-like reflections referencing specific things the user said during the session. Quote their words back to them — don't characterize their behavior. 2-4 bullets.}
-```
-
----
-
-## Spec Review Loop
-
-Before presenting the document to the user for approval, run an adversarial review.
-
-**Step 1: Dispatch reviewer subagent**
-
-Use the Agent tool to dispatch an independent reviewer. The reviewer has fresh context
-and cannot see the brainstorming conversation — only the document. This ensures genuine
-adversarial independence.
-
-Prompt the subagent with:
-- The file path of the document just written
-- "Read this document and review it on 5 dimensions. For each dimension, note PASS or
-  list specific issues with suggested fixes. At the end, output a quality score (1-10)
-  across all dimensions."
-
-**Dimensions:**
-1. **Completeness** — Are all requirements addressed? Missing edge cases?
-2. **Consistency** — Do parts of the document agree with each other? Contradictions?
-3. **Clarity** — Could an engineer implement this without asking questions? Ambiguous language?
-4. **Scope** — Does the document creep beyond the original problem? YAGNI violations?
-5. **Feasibility** — Can this actually be built with the stated approach? Hidden complexity?
-
-The subagent should return:
-- A quality score (1-10)
-- PASS if no issues, or a numbered list of issues with dimension, description, and fix
-
-**Step 2: Fix and re-dispatch**
-
-If the reviewer returns issues:
-1. Fix each issue in the document on disk (use Edit tool)
-2. Re-dispatch the reviewer subagent with the updated document
-3. Maximum 3 iterations total
-
-**Convergence guard:** If the reviewer returns the same issues on consecutive iterations
-(the fix didn't resolve them or the reviewer disagrees with the fix), stop the loop
-and persist those issues as "Reviewer Concerns" in the document rather than looping
-further.
-
-If the subagent fails, times out, or is unavailable — skip the review loop entirely.
-Tell the user: "Spec review unavailable — presenting unreviewed doc." The document is
-already written to disk; the review is a quality bonus, not a gate.
-
-**Step 3: Report and persist metrics**
-
-After the loop completes (PASS, max iterations, or convergence guard):
-
-1. Tell the user the result — summary by default:
-   "Your doc survived N rounds of adversarial review. M issues caught and fixed.
-   Quality score: X/10."
-   If they ask "what did the reviewer find?", show the full reviewer output.
-
-2. If issues remain after max iterations or convergence, add a "## Reviewer Concerns"
-   section to the document listing each unresolved issue. Downstream skills will see this.
-
-3. Append metrics:
-
-Replace ITERATIONS, FOUND, FIXED, REMAINING, SCORE with actual values from the review.
-
----
-
-Present the reviewed design doc to the user via AskUserQuestion:
-- A) Approve — mark Status: APPROVED and proceed to handoff
-- B) Revise — specify which sections need changes (loop back to revise those sections)
-- C) Start over — return to Phase 2
-
-
-
-## Brain Calibration Write-Back (Phase 2 / gated)
-
-When the skill makes a typed prediction worth tracking (scope decision,
-TTHW target, architectural bet, wedge commitment), it MAY write a
-`kind=bet` take to the brain so a calibration profile builds over time.
-
-**Gated on two things:**
-1. Brain trust policy for the active endpoint is `personal` (check via
-   `~/.claude/skills/gstuck/output/gstack/bin/gstack-config get brain_trust_policy@<endpoint-hash>`).
-   Shared brains skip write-back to avoid polluting team calibration.
-2. Feature flag `BRAIN_CALIBRATION_WRITEBACK` is set (today: false; flips
-   to true when upstream gbrain v0.42+ ships `takes_add` MCP op).
-
-When both gates pass, the write-back path uses `mcp__gbrain__takes_add`
-to record a take with weight 0.9 (per SKILL_CALIBRATION_WEIGHTS).
-If the MCP op is unavailable, fall back to `mcp__gbrain__put_page` with
-a gstack:takes fence block (documented but uglier path).
-
-Mandatory take frontmatter shape:
-```yaml
-kind: bet
-holder: <user identity from whoami>
-claim: <one-line prediction the skill is making>
-weight: 0.9
-since_date: <today's date>
-expected_resolution: <date in 1-3 months depending on skill>
-source_skill: office-hours
-```
-
-After write, invalidate the affected digests so the next preflight reflects
-the new state:
-
-```bash
-eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
-  ~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-cache invalidate product --project "$SLUG" 2>/dev/null || true
-  ~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-cache invalidate goals --project "$SLUG" 2>/dev/null || true
-  ~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-cache invalidate competitive-intel --project "$SLUG" 2>/dev/null || true
-```
-
-
-## Brain Cache Background Refresh
-
-After the skill's work completes (and telemetry has logged), kick a
-background refresh of any cache digest that's getting close to its TTL.
-This is non-blocking — the user doesn't wait. Next invocation benefits
-from the warm cache.
-
-```bash
-eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
-(~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-cache refresh --project "$SLUG" 2>/dev/null &) || true
-```
-
-
----
-
-## Phase 6: Handoff — The Relationship Closing
-
-Once the design doc is APPROVED, deliver the closing sequence. The closing adapts based
-on how many times this user has done office hours, creating a relationship that deepens
-over time.
-
-### Step 1: Read Builder Profile
-
-```bash
-PROFILE=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-builder-profile 2>/dev/null) || PROFILE="SESSION_COUNT: 0
-TIER: introduction"
-SESSION_TIER=$(echo "$PROFILE" | grep "^TIER:" | awk '{print $2}')
-SESSION_COUNT=$(echo "$PROFILE" | grep "^SESSION_COUNT:" | awk '{print $2}')
-```
-
-Read the full profile output. You will use these values throughout the closing.
-
-### Step 2: Follow the Tier Path
-
-Follow ONE tier path below based on `SESSION_TIER`. Do not mix tiers.
-
----
-
-### If TIER = introduction (first session)
-
-This is the full introduction. The user has never done office hours before.
-
-**Beat 1: Signal Reflection + Golden Age**
-
-One paragraph that weaves specific session callbacks with the golden age framing. Reference actual things the user said, quote their words back to them.
-
-**Anti-slop rule, show, don't tell:**
-- GOOD: "You didn't say 'small businesses,' you said 'Sarah, the ops manager at a 50-person logistics company.' That specificity is rare."
-- BAD: "You showed great specificity in identifying your target user."
-- GOOD: "You pushed back when I challenged premise #2. Most people just agree."
-- BAD: "You demonstrated conviction and independent thinking."
-
-Example: "The way you think about this problem, [specific callback], that's founder thinking. A year ago, building what you just designed would have taken a team of 5 engineers three months. Today you can build it this weekend with Claude Code. The engineering barrier is gone. What remains is taste, and you just demonstrated that."
-
-**Beat 2: "One more thing."**
-
-Output a separator and "One more thing." This resets attention and signals the genre shift.
-
----
-
-One more thing.
-
-**Beat 3: Garry's Personal Plea**
-
-Use the founder signal count from Phase 4.5 to select the right sub-tier.
-
-- **Top tier** (3+ signals AND named a specific user, revenue, or demand evidence):
-
-> ### Next-skill recommendations
-
-### Next-skill recommendations
-
-After the plea, suggest the next step:
-
-- **`/plan-ceo-review`** for ambitious features (EXPANSION mode) — rethink the problem, find the 10-star product
-- **`/plan-eng-review`** for well-scoped implementation planning — lock in architecture, tests, edge cases
-- **`/plan-design-review`** for visual/UX design review
-
-The design doc at `~/.gstack/projects/` is automatically discoverable by downstream skills — they will read it during their pre-review system audit.
+Confirm you Read every section the Section index named as applying to this run, and executed it in full. The design doc and the handoff are the deliverables — if you produced them from memory without Reading `sections/design-and-handoff.md`, stop and Read it now.
 
 ---
 
