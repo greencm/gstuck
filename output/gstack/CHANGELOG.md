@@ -1,11 +1,10 @@
-## gstuck (based on upstream v1.55.1.0, sanitized 2026-06-10)
+## gstuck (based on upstream v1.57.3.0, sanitized 2026-06-15)
 
 ### Removed
 - Supabase telemetry system (all phone-home calls to frugpmstpnojnhfyimgv.supabase.co)
 - GitHub update checks (raw.githubusercontent.com fetches on every invocation)
 - Local analytics JSONL writes (unconditional repo-name logging)
 - Telemetry opt-in prompt
-- YC referral content and tracked URLs (ycombinator.com/apply?ref=gstack)
 - Lake intro browser open (garryslist.org)
 - Auto-upgrade from public GitHub
 - Cross-tool session scanner (~/.claude/, ~/.codex/, ~/.gemini/ reads)
@@ -19,6 +18,314 @@
 ---
 
 # Changelog
+
+## [1.57.3.0] - 2026-06-07
+
+## **Every PR `/ship` opens gets the version stamped into its title, fork and agent PRs included.**
+## **The rule rides in the always-loaded part of the skill now, and a guard keeps it there.**
+
+`/ship` stamps `vX.Y.Z.W` onto the title of every PR or MR it creates or updates, so
+the version is the first thing you read in the PR list. That rule now lives in the
+always-loaded core of the ship skill instead of an on-demand section, so the agent
+applies it whether or not it opened the section that spells out the full procedure.
+A CI workflow backs this up: it rewrites a title to match VERSION on every PR that
+bumps the version, and it now reaches fork and agent PRs too, which a read-only token
+could never touch before. Two free tests lock the behavior in so it cannot drift on
+the next refactor.
+
+### The numbers that matter
+
+Reproduce with `bun test test/carve-section-ordering.test.ts test/pr-title-sync-workflow-safety.test.ts`
+and `bun run eval:select`.
+
+| Property | Before | After |
+|---|---|---|
+| Where the title rule loads | on-demand section only (since v1.54.0.0) | always-loaded skeleton + on-demand detail |
+| Fork / agent PR title sync | none (read-only token under `pull_request`) | covered via hardened `pull_request_target` |
+| Test proving the rule stays put | none | carve-guard registry asserts it on every PR |
+| CI injection guard for the title workflow | none | static tripwire fails CI on unsafe patterns |
+
+The title workflow now runs with a write token in the base-repo context but never
+checks out or executes PR-head code, and every attacker-controlled field reaches the
+script through `env:`, never inlined. A static test fails CI if either rule regresses.
+
+### What this means for you
+
+Ship a branch and the PR shows up titled `v1.57.3.0 fix: ...` without you touching it,
+even when the PR came from a fork. The agent no longer needs to read the right section
+at the right moment for the version to land in the title, and the next person who slims
+the ship skill cannot quietly strand the rule again, because a free test on every PR
+checks that it is still there.
+
+### Itemized changes
+
+#### Added
+- Carve-guard coverage for the ship PR-title invariant: the registry now asserts the
+  `v$NEW_VERSION` rule and the title helper stay in the always-loaded skeleton, while
+  the full create and update procedure stays in the on-demand section.
+- Static CI-safety test for the title-sync workflow that fails the build if it checks
+  out PR-head code or inlines an attacker-controlled PR field into a shell step.
+
+#### Changed
+- The PR/MR title-version rule is always-loaded in `/ship` again, so the version
+  prefix lands on every PR the workflow creates or updates.
+- The PR title-sync CI workflow now covers fork and agent PRs through a hardened
+  `pull_request_target` trigger (base-repo checkout only, PR fields passed via `env:`,
+  VERSION read as data from the PR head).
+
+#### Fixed
+- A path token in the ship PR-body section that rendered literally instead of resolving
+  now uses the correct helper path, so the Linked Spec auto-detect step runs as written.
+
+## [1.57.2.0] - 2026-06-08
+
+## **When the question picker breaks mid-skill, gstack asks in plain text instead of stalling.**
+## **Every skill detects a dead AskUserQuestion and falls back to a full decision brief you answer by typing a letter.**
+
+AskUserQuestion is how every gstack skill asks you to decide. When the host's question
+tool fails at runtime, which Conductor's MCP integration currently does intermittently,
+skills used to stall or hard-block. Now each skill detects the failure, works out
+whether a human is actually present, and if so re-renders the exact same decision as a
+text message: a plain-English explanation of the issue, a completeness score on each
+choice, and a recommendation with its reason, one paragraph per choice. You answer by
+typing a single letter. Headless eval runs still block cleanly (no human to answer);
+orchestrator sessions keep auto-choosing. This whole release was built and reviewed
+through that fallback, because the Conductor tool was down the entire session.
+
+### The numbers that matter
+
+No production benchmark for a reliability path like this. These are the behavior and
+coverage facts, verifiable with `bun test test/gstack-session-kind.test.ts
+test/resolver-ask-user-format.test.ts test/auq-error-fallback-hook.test.ts`.
+
+| When AskUserQuestion fails | Before | After |
+|---|---|---|
+| Interactive session (human present) | stall / hard BLOCK | full prose decision brief, answer by letter |
+| Headless eval / CI | BLOCK | BLOCK (unchanged, correct) |
+| Orchestrator (OpenClaw) session | undefined | auto-choose recommended (contract kept) |
+| Session kinds detected | 0 | 3 (interactive / headless / spawned) |
+| New tests guarding the path | 0 | 34 |
+
+The text brief is not a degraded stub. It carries the same three things the picker
+shows: a clear explanation of what is being decided, a `Completeness: X/10` on every
+choice, and a recommendation with the reason it wins.
+
+### What this means for you
+
+If your host's question tool flakes out, a skill no longer dies on you. You get the
+same decision to make, in text, and you reply with a letter. Nothing changes when the
+tool works normally. If you run gstack headless, those sessions still block on a needed
+question exactly as before, so eval determinism is intact.
+
+### Itemized changes
+
+#### Added
+- `gstack-session-kind` classifies each session as interactive, headless, or spawned,
+  echoed as `SESSION_KIND` at skill start so any skill can branch on it.
+- Plain-text fallback for AskUserQuestion: on a tool failure in an interactive session,
+  the skill renders the full decision brief (issue ELI10 + per-choice completeness +
+  recommendation) as markdown you answer by typing a letter, then stops and waits.
+- A defensive hook that, when an AskUserQuestion call errors, reminds the agent to run
+  the fallback for the current session kind.
+
+#### Changed
+- AskUserQuestion is still sent as a normal tool call; the prose path applies only when
+  the tool is unavailable or erroring, and never on a `[plan-tune auto-decide]` result.
+
+#### Fixed
+- Section-loading tests use the canonical kebab test names, so the test-coverage gate
+  matches them.
+- External-host doc-freshness checks are deterministic, no longer dependent on a prior
+  full regeneration.
+
+#### For contributors
+- The eval/E2E runners set `GSTACK_HEADLESS=1` so headless runs classify correctly;
+  interactive-path suites opt out per-run.
+- Per-skill `maxSizeRatio` override in the carve-guards registry; `document-release`
+  gets 1.08 headroom for the cross-cutting preamble addition while every other skill
+  keeps the 1.05 ceiling.
+
+## [1.57.0.0] - 2026-06-07
+
+## **Three more heavyweight skills load lighter, and every carved skill finally has a test that proves it loads.**
+## **`/cso`, `/document-release`, and `/design-consultation` shed ~49KB of always-loaded prose; CI now blocks any carve that ships without its guards.**
+
+gstack splits its biggest skills into a small always-loaded skeleton plus on-demand
+sections that load only when a step needs them. This release carves three more,
+`/document-release`, `/design-consultation`, and `/cso`, so the first time you invoke
+them the agent reads far less. It also closes a gap from the earlier carves: only two
+of six already-carved skills had a test proving an agent actually reads the section it
+was told to read. Now all nine carved skills are guarded the same way, and CI blocks
+any future carve that ships without its guards. `/cso` got extra care: its mode
+dispatch and false-positive-filtering rules stay always-loaded, so a security audit
+can never run with a rule stranded in an unread section.
+
+### The numbers that matter
+
+Measured with `wc -c <skill>/SKILL.md`; the skeleton+sections union is reproduced by
+`bun test test/parity-suite.test.ts test/skill-size-budget.test.ts`.
+
+| Skill | Always-loaded before | After | Δ |
+|---|---|---|---|
+| /design-consultation | 80,719 B | 59,229 B | **−27%** |
+| /document-release | 59,256 B | 45,797 B | **−23%** |
+| /cso | 79,383 B | 65,117 B | **−18%** |
+| Carved skills with a section-load guard | 2 of 6 | 9 of 9 | **full coverage** |
+
+Total always-loaded prose across the three skills drops about 49KB (~12K tokens) on
+first invoke, with nothing lost: every line moved into an on-demand section the
+skeleton points at, and the parity suite checks the union still contains it.
+
+### What this means for you
+
+Run `/cso`, `/document-release`, or `/design-consultation` and the agent does less
+reading before it starts working, so the session stays leaner. The carve pattern is
+now safe to extend: a free static test runs on every PR and a behavioral test runs
+weekly to prove the agent reads each section, so future slimming can't quietly drop
+behavior. Nothing about how you invoke these skills changed.
+
+### Itemized changes
+
+#### Added
+- Canonical carved-skill guard registry (`test/helpers/carve-guards.ts`): one source of truth for which skills are carved and what each must preserve. `parity-harness.ts` and `skill-size-budget.ts` derive their carved-skill lists from it.
+- Carve guard suite: data-driven static ordering test, behavioral section-loading test (periodic), a completeness meta-guard that fails CI if a carved skill lacks its guards, and negative tests proving the guards actually fire.
+- `/cso`, `/document-release`, and `/design-consultation` carved into skeleton + on-demand sections.
+
+#### Changed
+- `/cso` keeps its mode dispatch (`## Arguments`, `## Mode Resolution`), always-run phases, and false-positive-filtering exceptions always-loaded; an earliest-use invariant enforces that dispatch appears before any on-demand read.
+
+#### For contributors
+- Redaction, taxonomy, and parity content tests now read the skeleton+sections union so relocated prose still counts toward coverage.
+- Real-session section-read canary deferred to TODOS (the deterministic guards ship first).
+
+## [1.56.1.0] - 2026-06-03
+
+## **`/sync-gbrain` can no longer delete your repo. Cleanup now refuses any directory it cannot prove it created.**
+
+A `/sync-gbrain` memory sync could recursively delete your entire working tree. A
+crashed import left a checkpoint pointing at the repo root, the next sync
+"resumed" into it, and the cleanup step `rm -rf`'d it, taking uncommitted and
+untracked work with it. This release closes that path and fixes three more bugs
+hiding in the same resume machinery: cleanup now deletes only directories it can
+prove are gstack-minted staging dirs, the remote-http transcript dir is never
+touched, an interrupted import actually keeps its checkpoint so the next run
+resumes instead of restaging, and a resumed run no longer marks files that failed
+to import as successfully ingested.
+
+### The numbers that matter
+
+Source: `bun test test/regression-1611-gbrain-sync-resume.test.ts` on this branch.
+
+| Metric | Before | After | Δ |
+|--------|--------|-------|---|
+| Repo-root `rm -rf` reachable | yes | no | closed |
+| Proof required before delete | none | 5 checks | realpath + direct-child + name + .git tripwire + minted-marker |
+| Resume after a timed-out import | broken (dir deleted) | works | fixed |
+| Failed files mislabeled "ingested" on resume | yes | no | fixed |
+| Resume regression-test assertions | 9 | 64 | +55 |
+
+The guard is fail-closed: anything it cannot prove it owns is left on disk (a few
+seconds of re-staging next run) rather than deleted. That asymmetry is the design
+- a missing marker can cost a little work, never your data.
+
+### What this means for you
+
+If you use `/sync-gbrain`, a crashed or timed-out import can no longer cost you
+uncommitted work. Resume now does what it always claimed: a large sync that times
+out picks up where it left off next run instead of starting over, and files that
+failed to import get retried instead of silently skipped. Nothing to configure.
+Upgrade and keep syncing.
+
+### Itemized changes
+
+#### Fixed
+- **`/sync-gbrain` could `rm -rf` your repo root.** A poisoned resume checkpoint
+  (dir = the repo, written when an import was interrupted while the repo was the
+  working directory) was adopted as the staging dir and recursively deleted. A
+  single fail-closed ownership check now guards every staging delete and every
+  resume: a path must resolve cleanly, be a direct child of `~/.gstack` named
+  `.staging-ingest-*`, contain no `.git`, and carry a marker file gstack minted.
+  Anything else is refused. Contributed by @diazMelgarejo (cyre).
+- **Remote-http syncs no longer churn (or scare you).** The persistent transcript
+  dir that the brain sync pushes is no longer routed through staging cleanup, so
+  it stops being deleted on every run and stops emitting a false "preventing data
+  loss" warning.
+- **A timed-out import now actually resumes.** Previously the run said "checkpoint
+  preserved" but then deleted the staging dir, so the next run always restaged.
+  The staging dir is now kept when a checkpoint points at it, and the message is
+  honest when there is nothing to resume.
+- **Resume no longer hides import failures.** A resumed run could mark files that
+  failed to import as ingested, so they were never retried. Failures now map back
+  to their source files on resume and get another pass.
+
+#### For contributors
+- New `lib/staging-guard.ts` exports `checkOwnedStagingDir()`, the single
+  fail-closed predicate shared by the deletion chokepoint and the resume gate. It
+  returns the realpath-resolved canonical path so callers delete exactly what they
+  validated (closes a symlink TOCTOU). `makeStagingDir()` tears down and rethrows
+  if its marker write fails, so a marker-less dir can never leak. The
+  `#1611` resume regression suite grew to 64 assertions covering the poison
+  matrix, the remote-http gate, timeout-preserve, and resume failure-mapping.
+
+## [1.56.0.0] - 2026-06-03
+
+## **Five heavy skills now load their bulk on demand, the shared question preamble slimmed corpus-wide, and a paranoid test suite proves the questions never got worse.**
+
+The token-reduction program lands its biggest wave. Five of the heaviest skills — `/plan-ceo-review`, `/office-hours`, `/plan-eng-review`, `/plan-design-review`, and `/plan-devex-review` — are now a small always-loaded skeleton plus an on-demand `sections/` file the agent opens only when it reaches the work. The conversational front half (Step 0 scope, the live interview) stays always-loaded; the deep review bodies, design-doc templates, outside-voice rules, and required-output writers move behind a single STOP-Read. The shared AskUserQuestion preamble also shed its rarely-needed CJK escaping manual, so every interactive skill is a little lighter at once. And because the most user-facing surface in gstack is the question it asks you, a new paranoid test suite proves that slimming a skill never strands or degrades that question.
+
+### The numbers that matter
+
+Measured from the generated skeletons (`wc -c <skill>/SKILL.md`), regenerated for all hosts:
+
+| Skill | Before | After | Δ |
+|-------|--------|-------|---|
+| plan-ceo-review | 138,838 B | 80,731 B | -42.0% |
+| office-hours | 118,280 B | 88,975 B | -24.8% |
+| plan-eng-review | 106,984 B | 54,892 B | -48.7% |
+| plan-design-review | 112,057 B | 76,024 B | -32.2% |
+| plan-devex-review | 110,621 B | 69,658 B | -37.0% |
+
+On top of the per-skill carves, the shared AskUserQuestion preamble dropped its inline CJK manual to a one-line rule + a doc pointer, trimming ~29,524 B across the Claude-host corpus (every interactive skill, ~900 B each).
+
+The AskUserQuestion proof, measured by SDK capture (`test/skill-e2e-auq-matrix.test.ts`):
+
+| Guarantee | Result |
+|-----------|--------|
+| Carved vs verbose, same trigger | 7/7 format, substance 5 == 7/7 format, substance 5 (no degradation) |
+| Matrix across 7 AUQ-heavy skills | all 7/7 format, substance 4-5 |
+| Same trigger 3× (consistency) | stable, every format element every run |
+| AUQ format spec always-loaded | guaranteed in every skeleton (Layer 0) |
+
+Every review runs identical pass for pass; the only thing that changed is what sits in context before the work begins.
+
+### What this means for you
+
+The skills you run most start markedly lighter: a `/plan-ceo-review` opens ~42% smaller, the others 25-49%, and they pull in their review bodies only when they reach them. You will not notice any behavior change in the reviews themselves; they run section for section as before. What you get is more of the context window left for your actual work, paid back on every invocation. And every skill that asks you questions now carries a guarantee, enforced by tests: the decision brief (plain-English ELI10, an explicit recommendation with a real reason, pros and cons, the stakes) is provably in context the instant any question fires. External hosts (codex, factory, kiro, opencode) still receive the full inline skill, so nothing regresses off Claude.
+
+### Itemized changes
+
+#### Added
+- `plan-ceo-review/sections/review-sections.md` — the 11-section deep review, outside-voice rules, required-output registries, completion summary, review report writer, next-step chaining, and mode quick reference, behind a STOP-Read pointer with a passive `manifest.json`.
+- `office-hours/sections/design-and-handoff.md` — Phase 5 design-doc templates + Phase 6 tiered handoff, behind a STOP-Read pointer with a passive `manifest.json`.
+- `/plan-eng-review`, `/plan-design-review`, `/plan-devex-review` each gain a `sections/review-sections.md` carved behind a post-Step-0 STOP-Read.
+- `docs/askuserquestion-cjk.md` — full non-ASCII / CJK escaping rationale + worked example, read on demand.
+- `test/auq-format-always-loaded.test.ts` — free per-PR keystone: every interactive skill must carry the full AskUserQuestion format spec in its always-loaded skeleton, never stranded in a section. 51 cases plus a negative control.
+- `test/skill-e2e-auq-matrix.test.ts` — drives each AUQ-heavy skill to its first question and grades it (7/7 format, substance >=4).
+- `test/skill-e2e-auq-verbose-vs-carved-ab.test.ts` — proves a carved skill's question is not worse than the pre-carve monolith's, on the same trigger.
+- `test/skill-e2e-auq-consistency.test.ts` — same trigger N times, fails on any format element that flickers between runs.
+- `test/codex-e2e-recommendation-substance.test.ts` — grades `/codex`'s live recommendation substance.
+- `test/skill-ceo-section-ordering.test.ts` — gate-tier static guard: the STOP fires after Step 0, the review body is absent from the skeleton, the report writer lives in the section, and nothing review-governing sits below the STOP.
+- `test/skill-e2e-plan-ceo-review-section-loading.test.ts` — periodic backstop that asserts the carved section is Read before the report.
+
+#### Changed
+- `/plan-ceo-review`, `/office-hours`, `/plan-eng-review`, `/plan-design-review`, `/plan-devex-review` are each a skeleton + one on-demand section on Claude; the conversational front (Step 0 / Phases 1-4.5) stays always-loaded; external hosts still receive the full inline skill (no behavior change off Claude).
+- The AskUserQuestion preamble trims the inline CJK manual to the operative rule + a doc pointer; the always-loaded self-check is unchanged.
+- Parity, size-budget, section-manifest, gen-skill-docs, and skill-validation treat every carved skill consistently (content + size floors run against the skeleton + section union; skeleton-shrink assertions guard the always-loaded win).
+
+#### For contributors
+- `test/helpers/auq-sdk-capture.ts` — reusable SDK capture engine: drives a skill to its AUQ and captures the verbatim generated text cleanly (real-PTY mangles plan-mode questions), grades format + recommendation substance robust to the connective, and detects section reads losslessly from the tool-use stream.
+- `section-manifest-consistency` discovers every carved skill automatically, so the next carve is covered the moment its manifest lands.
+- The `/ship` and `/plan-ceo-review` section-loading E2E tests detect section reads from the `claude -p` tool-use stream instead of scraping the real-PTY screen buffer, so they are reliable (the PTY path silently saw nothing in some terminals) and run hermetically against the worktree carve without mutating the installed skill.
 
 ## [1.55.1.0] - 2026-06-02
 

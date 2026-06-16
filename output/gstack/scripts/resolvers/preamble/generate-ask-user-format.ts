@@ -9,11 +9,31 @@ export function generateAskUserFormat(_ctx: TemplateContext): string {
 
 **Rule:** if any \`mcp__*__AskUserQuestion\` variant is in your tool list, prefer it. Hosts may disable native AUQ via \`--disallowedTools AskUserQuestion\` (Conductor does, by default) and route through their MCP variant; calling native there silently fails. Same questions/options shape; same decision-brief format applies.
 
-**If no AskUserQuestion variant appears in your tool list, this skill is BLOCKED.** Stop, report \`BLOCKED — AskUserQuestion unavailable\`, and wait for the user. Do not write decisions to the plan file as a substitute, do not emit them as prose and stop, and do not silently auto-decide (only \`/plan-tune\` AUTO_DECIDE opt-ins authorize auto-picking).
+If AskUserQuestion is unavailable (no variant in your tool list) OR a call to it fails, do NOT silently auto-decide or write the decision to the plan file as a substitute. Follow the **failure fallback** below.
+
+### When AskUserQuestion is unavailable or a call fails
+
+Tell three outcomes apart:
+
+1. **Auto-decide denial (NOT a failure).** The result contains \`[plan-tune auto-decide] <id> → <option>\` — the preference hook working as designed. Proceed with that option. Do NOT retry, do NOT fall back to prose.
+2. **Genuine failure** — no variant in your tool list, OR the variant is present but the call returns an error / missing result (MCP transport error, empty result, host bug — e.g. Conductor's MCP AskUserQuestion is flaky and returns \`[Tool result missing due to internal error]\`).
+   - If it was present and **errored** (not absent), retry the SAME call **once** — but only if no answer could have surfaced (a missing-result error can arrive after the user already saw the question; retrying would double-prompt, so if it may have reached them, treat as pending, don't retry).
+   - Then branch on \`SESSION_KIND\` (echoed by the preamble; empty/absent ⇒ \`interactive\`):
+     - \`spawned\` → defer to the **Spawned session** block: auto-choose the recommended option. Never prose, never BLOCKED.
+     - \`headless\` → \`BLOCKED — AskUserQuestion unavailable\`; stop and wait (no human can answer).
+     - \`interactive\` → **prose fallback** (below).
+
+**Prose fallback — render the decision brief as a markdown message, not a tool call.** Same information as the tool format below, different structure (paragraphs, not ✅/❌ bullets). It MUST surface this triad:
+
+1. **A clear ELI10 of the issue itself** — plain English on what's being decided and why it matters (the question, not per-choice), naming the stakes. Lead with it.
+2. **Completeness scores per choice** — explicit \`Completeness: X/10\` on EACH choice (10 complete, 7 happy-path, 3 shortcut); use the kind-note when options differ in kind not coverage, but never silently drop the score.
+3. **The recommendation and why** — a \`Recommendation: <choice> because <reason>\` line plus the \`(recommended)\` marker on that choice.
+
+Layout: a \`D<N>\` title + a one-line note that AskUserQuestion failed and to reply with a letter; the issue ELI10; the Recommendation line; then ONE paragraph per choice carrying its \`(recommended)\` marker, its \`Completeness: X/10\`, and 2-4 sentences of reasoning — never a bare bullet list; a closing \`Net:\` line. Split chains / 5+ options: one prose block per per-option call, in sequence. Then STOP and wait — the user's typed answer is the decision. In plan mode this satisfies end-of-turn like a tool call.
 
 ### Format
 
-Every AskUserQuestion is a decision brief and must be sent as tool_use, not prose.
+Every AskUserQuestion is a decision brief and must be sent as tool_use, not prose — unless the documented failure fallback above applies (interactive session + the call is unavailable/erroring), in which case the prose fallback is the correct output.
 
 \`\`\`
 D<N> — <one-line question title>
@@ -75,25 +95,12 @@ so split chains are never AUTO_DECIDE-eligible — the user's option set is sacr
 **Full rule + worked examples + Hold/dependency semantics:** see
 \`docs/askuserquestion-split.md\` in the gstack repo. Read on demand when N>4.
 
-**Non-ASCII characters — write directly, never \\u-escape.** When any
-    string field (question, option label, option description) contains
-    Chinese (繁體/簡體), Japanese, Korean, or other non-ASCII text, emit
-    the literal UTF-8 characters in the JSON string. **Never escape them
-    as \`\\uXXXX\`.** Claude Code's tool parameter pipe is UTF-8 native
-    and passes characters through unchanged. Manually escaping requires
-    recalling each codepoint from training, which is unreliable for long
-    CJK strings — the model regularly emits the wrong codepoint (e.g.
-    writes \`\\u3103\` thinking it is 管 U+7BA1, but \`\\u3103\` is
-    actually ㄃, so the user sees \`管理工具\` rendered as \`㄃3用箱\`).
-    The trigger is long, multi-line questions with hundreds of CJK
-    characters: that is exactly when reflexive escaping kicks in and
-    exactly when miscoding is most damaging. Long ≠ escape. Keep
-    characters literal.
-
-    Wrong: \`"question": "請選擇\\uXXXX\\uXXXX\\uXXXX\\uXXXX"\`
-    Right: \`"question": "請選擇管理工具"\`
-
-    Only JSON-mandatory escapes remain allowed: \`\\n\`, \`\\t\`, \`\\"\`, \`\\\\\`.
+**Non-ASCII characters — write directly, never \\u-escape.** When any string
+field contains Chinese (繁體/簡體), Japanese, Korean, or other non-ASCII text,
+emit the literal UTF-8 characters; never escape them as \`\\uXXXX\` (the pipe is
+UTF-8 native, and manual escaping miscodes long CJK strings). Only \`\\n\`,
+\`\\t\`, \`\\"\`, \`\\\\\` remain allowed. Full rationale + worked example: see
+\`docs/askuserquestion-cjk.md\`. Read on demand when a question contains CJK.
 
 ### Self-check before emitting
 
@@ -106,7 +113,7 @@ Before calling AskUserQuestion, verify:
 - [ ] (recommended) label on one option (even for neutral-posture)
 - [ ] Dual-scale effort labels on effort-bearing options (human / CC)
 - [ ] Net line closes the decision
-- [ ] You are calling the tool, not writing prose
+- [ ] You are calling the tool, not writing prose — unless the documented failure fallback applies (then: prose with the mandatory triad — issue ELI10, per-choice Completeness, Recommendation + \`(recommended)\` — and a "reply with a letter" instruction, then STOP)
 - [ ] Non-ASCII characters (CJK / accents) written directly, NOT \\u-escaped
 - [ ] If you had 5+ options, you split (or batched into ≤4-groups) — did NOT drop any
 - [ ] If you split, you checked dependencies between options before firing the chain

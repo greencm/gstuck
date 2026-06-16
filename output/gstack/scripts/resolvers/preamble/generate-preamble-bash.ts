@@ -27,6 +27,9 @@ echo "SKILL_PREFIX: $_SKILL_PREFIX"
 source <(${ctx.paths.binDir}/gstack-repo-mode 2>/dev/null) || true
 REPO_MODE=\${REPO_MODE:-unknown}
 echo "REPO_MODE: $REPO_MODE"
+_SESSION_KIND=$(${ctx.paths.binDir}/gstack-session-kind 2>/dev/null || echo "interactive")
+case "$_SESSION_KIND" in spawned|headless|interactive) ;; *) _SESSION_KIND="interactive" ;; esac
+echo "SESSION_KIND: $_SESSION_KIND"
 _EXPLAIN_LEVEL=$(${ctx.paths.binDir}/gstack-config get explain_level 2>/dev/null || echo "default")
 if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then _EXPLAIN_LEVEL="default"; fi
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"

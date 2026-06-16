@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ParityBaseline, SkillBaselineEntry } from './capture-parity-baseline';
 import { captureBaseline } from './capture-parity-baseline';
+import { CARVE_GUARDS } from './carve-guards';
 
 export interface ParityInvariant {
   skill: string;
@@ -198,67 +199,13 @@ export function runParityChecks(opts: {
  * Each entry pins what must-not-break in a skill family. Extend as future
  * skills land. Phase B (v2.0.0.0) adds LLM-judge invariants on top of these.
  */
-export const PARITY_INVARIANTS: ParityInvariant[] = [
-  {
-    skill: 'cso',
-    mustContain: ['OWASP', 'STRIDE', 'daily', 'comprehensive', 'verif'],
-    mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
-    minBytes: 30_000,
-  },
-  {
-    // Carved (v2 plan T9): skeleton SKILL.md + sections/*.md. Content checks run
-    // against the union (relocated phrases still count); size floors run against
-    // the union (total behavior preserved); maxSkeletonBytes asserts the
-    // always-loaded skeleton actually shrank from the ~167KB monolith.
-    skill: 'ship',
-    sectioned: true,
-    maxSkeletonBytes: 90_000,
-    mustContain: [
-      'VERSION',
-      'CHANGELOG',
-      'review',
-      'merge',
-      'PR',
-    ],
-    mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
-    minBytes: 120_000,
-  },
-  {
-    skill: 'plan-ceo-review',
-    mustContain: [
-      'SCOPE EXPANSION',
-      'SELECTIVE EXPANSION',
-      'HOLD SCOPE',
-      'SCOPE REDUCTION',
-    ],
-    mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
-    minBytes: 80_000,
-  },
-  {
-    skill: 'plan-eng-review',
-    mustContain: [
-      'Architecture',
-      'Code Quality',
-      'Test',
-      'Performance',
-    ],
-    mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
-    minBytes: 70_000,
-  },
-  {
-    skill: 'plan-design-review',
-    mustContain: [
-      'design',
-      'visual',
-    ],
-    mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
-    minBytes: 70_000,
-  },
+/**
+ * Monolith (non-carved) invariants — hand-written. Carved-skill invariants are
+ * generated from CARVE_GUARDS below (single source of truth), so they never drift
+ * from the size-budget / static / behavioral guards.
+ */
+const MONOLITH_INVARIANTS: ParityInvariant[] = [
+  // cso is now carved — its invariant is generated from CARVE_GUARDS below.
   {
     skill: 'review',
     mustContain: ['confidence', 'P1', 'P2'],
@@ -281,17 +228,34 @@ export const PARITY_INVARIANTS: ParityInvariant[] = [
     minBytes: 30_000,
   },
   {
-    skill: 'office-hours',
-    mustContain: ['design doc', 'problem statement'],
-    mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
-    minBytes: 70_000,
-  },
-  {
     skill: 'autoplan',
     mustContain: ['ceo', 'eng', 'design'],
     mustHaveHeadings: ['## Preamble', '## When to invoke'],
     maxSizeRatio: 1.05,
     minBytes: 70_000,
   },
+];
+
+/**
+ * Carved-skill invariants, GENERATED from the canonical CARVE_GUARDS registry
+ * (EQ1: single source of truth). Each carve's skeleton-shrink floor
+ * (maxSkeletonBytes), union floor (minUnionBytes), and content invariants
+ * (mustContain) live in carve-guards.ts; this just projects them into the parity
+ * shape. Adding a carve there auto-adds its union guard here — which is how
+ * plan-devex-review (previously in SECTIONS_EXTRACTED but missing a sectioned
+ * parity invariant) is now guarded.
+ */
+const CARVED_INVARIANTS: ParityInvariant[] = Object.values(CARVE_GUARDS).map((g) => ({
+  skill: g.skill,
+  sectioned: true,
+  maxSkeletonBytes: g.maxSkeletonBytes,
+  minBytes: g.minUnionBytes,
+  mustContain: g.mustContain,
+  mustHaveHeadings: ['## Preamble', '## When to invoke'],
+  maxSizeRatio: g.maxSizeRatio ?? 1.05,
+}));
+
+export const PARITY_INVARIANTS: ParityInvariant[] = [
+  ...MONOLITH_INVARIANTS,
+  ...CARVED_INVARIANTS,
 ];
