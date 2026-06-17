@@ -1286,22 +1286,37 @@ fi
 DETECT_BIN="$SOURCE_GSTACK_DIR/bin/gstack-gbrain-detect"
 GBRAIN_STATE_DIR="${GSTACK_HOME:-$HOME/.gstack}"
 DETECTION_FILE="$GBRAIN_STATE_DIR/gbrain-detection.json"
+# PID-unique tmp so concurrent setups (parallel Conductor workspaces) can't
+# clobber each other's in-flight detection write.
+DETECTION_TMP="$DETECTION_FILE.$$.tmp"
 mkdir -p "$GBRAIN_STATE_DIR"
 if [ -x "$DETECT_BIN" ]; then
-  if "$DETECT_BIN" > "$DETECTION_FILE.tmp" 2>/dev/null; then
-    mv "$DETECTION_FILE.tmp" "$DETECTION_FILE"
-    if grep -q '"gbrain_local_status": "ok"' "$DETECTION_FILE" 2>/dev/null; then
-      log "gbrain detected — regenerating Claude SKILL.md with brain-aware blocks (~250 token overhead per planning skill)..."
-      (
-        cd "$SOURCE_GSTACK_DIR"
-        bun_cmd run gen:skill-docs:user --host claude 2>&1 | tail -3
-      ) || log "  warning: gen:skill-docs:user failed — run 'bun run gen:skill-docs:user' manually if you want brain-aware blocks"
+  if "$DETECT_BIN" > "$DETECTION_TMP" 2>/dev/null; then
+    mv "$DETECTION_TMP" "$DETECTION_FILE"
+    # Single source of truth for "is gbrain usable" — `--is-ok` runs live
+    # detection (exit 0 iff ok), so setup, bin/dev-setup, and gstack-config
+    # all gate on the same check instead of re-grepping the JSON.
+    if "$DETECT_BIN" --is-ok 2>/dev/null; then
+      if [ -n "${GSTACK_SKIP_GBRAIN_REGEN:-}" ]; then
+        # Dev/source tree (set by bin/dev-setup): never regenerate tracked
+        # SKILL.md in place — that dirties checked-in source. Detection is
+        # still persisted above; the dev workspace renders the :user variant
+        # into an untracked dir, and other projects get blocks via
+        # `gstack-config gbrain-refresh`.
+        log "gbrain detected — GSTACK_SKIP_GBRAIN_REGEN set: leaving tracked SKILL.md canonical (dev/source tree)."
+      else
+        log "gbrain detected — regenerating Claude SKILL.md with brain-aware blocks (~250 token overhead per planning skill)..."
+        (
+          cd "$SOURCE_GSTACK_DIR"
+          bun_cmd run gen:skill-docs:user --host claude 2>&1 | tail -3
+        ) || log "  warning: gen:skill-docs:user failed — run 'bun run gen:skill-docs:user' manually if you want brain-aware blocks"
+      fi
     else
       log "gbrain not detected — brain-aware blocks suppressed in planning-skill SKILL.md files (zero token overhead)."
       log "  To enable: install gbrain via /setup-gbrain, then re-run ./setup or 'gstack-config gbrain-refresh'."
     fi
   else
-    rm -f "$DETECTION_FILE.tmp"
+    rm -f "$DETECTION_TMP"
     log "  warning: gstack-gbrain-detect failed — brain-aware blocks will stay suppressed"
   fi
 fi

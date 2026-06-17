@@ -161,6 +161,10 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     maxSkeletonBytes: 62_000,
     minUnionBytes: 70_000,
     mustContain: ['Architecture', 'Code Quality', 'Test', 'Performance'],
+    // Cross-cutting preamble growth (v1.57.2.0 AUQ-failure prose fallback + the
+    // decision-memory nudge + the v1.57.4.0 Boil-the-Ocean rename) lands this just
+    // over the strict 1.05; small headroom for the shared preamble additions.
+    maxSizeRatio: 1.06,
   },
   'plan-design-review': {
     skill: 'plan-design-review',
@@ -249,6 +253,10 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     maxSkeletonBytes: 64_000,
     minUnionBytes: 72_000,
     mustContain: ['Typography', 'Color', 'Aesthetic Direction'],
+    // Cross-cutting preamble growth (v1.57.2.0 AUQ-failure prose fallback ~2KB +
+    // the cross-session decision-memory nudge) lands this carved skeleton just over
+    // the strict 1.05; headroom for the shared preamble additions.
+    maxSizeRatio: 1.07,
   },
   cso: {
     skill: 'cso',
@@ -281,6 +289,10 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     maxSkeletonBytes: 70_000,
     minUnionBytes: 72_000,
     mustContain: ['OWASP', 'STRIDE', 'daily', 'comprehensive', 'verif'],
+    // cso keeps its mode-dispatch + FP-filtering phases always-loaded, so the
+    // cross-cutting preamble growth (v1.57.2.0 AUQ-failure prose fallback ~2KB + the
+    // decision-memory nudge) lands it just over 1.05; headroom for the shared additions.
+    maxSizeRatio: 1.07,
   },
 };
 
