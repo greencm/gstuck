@@ -235,6 +235,13 @@ case "${1:-}" in
       echo "Warning: plan_tune_hooks '$VALUE' not recognized. Valid values: prompt, yes, no. Using prompt." >&2
       VALUE="prompt"
     fi
+    # codex_reviews controls PAID Codex calls. Unlike the warn-and-default keys above,
+    # an invalid value is REJECTED and the existing setting is left unchanged — a typo
+    # must never silently flip the switch and turn paid Codex calls on or off.
+    if [ "$KEY" = "codex_reviews" ] && [ "$VALUE" != "enabled" ] && [ "$VALUE" != "disabled" ]; then
+      echo "Error: codex_reviews '$VALUE' not recognized. Valid values: enabled, disabled. Existing value left unchanged." >&2
+      exit 1
+    fi
     mkdir -p "$STATE_DIR"
     # Write annotated header on first creation
     if [ ! -f "$CONFIG_FILE" ]; then

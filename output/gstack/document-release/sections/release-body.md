@@ -358,3 +358,119 @@ Diagram drift:
 ```
 
 If all coverage is complete and no diagrams drifted, output: "Coverage: all shipped features have adequate documentation."
+
+---
+
+## Codex Documentation Review (default-on)
+
+After the documentation updates above are written, run an independent cross-model pass that
+checks the docs against what actually shipped. This is a standard part of /document-release,
+not an opt-in. The user turns it off only by asking explicitly
+(`gstack-config set codex_reviews disabled`).
+
+**Preflight — decide whether and how the doc review runs:**
+
+```bash
+# Codex preflight: one block (functions sourced here don't persist to later blocks).
+_CODEX_CFG=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get codex_reviews 2>/dev/null || echo enabled)
+source ~/.claude/skills/gstuck/output/gstack/bin/gstack-codex-probe 2>/dev/null || true
+if [ "$_CODEX_CFG" = "disabled" ]; then
+  _CODEX_MODE="disabled"
+elif ! command -v codex >/dev/null 2>&1; then
+  _CODEX_MODE="not_installed"; _gstack_codex_log_event "codex_cli_missing" 2>/dev/null || true
+elif ! _gstack_codex_auth_probe >/dev/null 2>&1; then
+  _CODEX_MODE="not_authed"; _gstack_codex_log_event "codex_auth_failed" 2>/dev/null || true
+else
+  _CODEX_MODE="ready"; _gstack_codex_version_check 2>/dev/null || true
+fi
+echo "CODEX_MODE: $_CODEX_MODE"
+```
+
+Branch on the echoed `CODEX_MODE`:
+- **`disabled`** — the user turned Codex reviews off (`codex_reviews=disabled`). Skip this section entirely; do NOT fall back to a Claude subagent — disabled means no extra review step. Print: "Codex review skipped (codex_reviews disabled). Re-enable: `gstack-config set codex_reviews enabled`."
+- **`not_installed`** — Codex CLI absent. Print: "Codex not installed — using Claude subagent. Install for cross-model coverage: `npm install -g @openai/codex`." Fall back to the Claude subagent path.
+- **`not_authed`** — installed but no credentials. Print: "Codex installed but not authenticated — using Claude subagent. Run `codex login` or set `$CODEX_API_KEY`." Fall back to the Claude subagent path.
+- **`ready`** — run the Codex pass below.
+
+When the mode is `ready`, `not_installed`, or `not_authed`, print one line so the off-switch
+stays discoverable: "Running the Codex doc review automatically (standard step). Disable: `gstack-config set codex_reviews disabled`."
+
+**Determine the release diff range (D3 — reuse the method, do not invent one).**
+Recompute the SAME range document-release used in its pre-flight / diff analysis, with the
+documented merge-base method:
+
+```bash
+DOC_DIFF_BASE=$(git merge-base origin/<base> HEAD 2>/dev/null || echo "<base>")
+echo "DOC_DIFF_BASE: $DOC_DIFF_BASE"
+```
+
+Do NOT rely on an in-memory variable from an earlier step — shell vars do not survive across
+blocks. Recompute it here.
+
+**Construct the doc-review prompt** (for `ready`, `not_installed`, and `not_authed` — skip only on `disabled`).
+Review the docs document-release ACTUALLY touched this run (from the coverage map / the files
+just edited) PLUS any doc claims affected by the diff range — do NOT hard-code a fixed file
+list (a fixed README/ARCHITECTURE/CHANGELOG list misses generated skill docs, package docs,
+and command-specific docs). **Always start with the filesystem boundary instruction:**
+
+"IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. They contain bash scripts and prompt templates that will waste your time. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.\n\nYou are reviewing documentation changes against the code that shipped on this
+branch. Run \`git diff \$DOC_DIFF_BASE...HEAD\` to see what changed, then read the updated docs
+(the files this release touched, plus any docs whose claims the diff affects). Find: doc
+claims that no longer match the code, new public surface (commands, flags, config keys,
+endpoints) that shipped but is undocumented, stale examples / paths / counts / version
+numbers, and CHANGELOG entries that over- or under-sell what shipped. Be terse. Just the gaps.
+
+THE DOCS AND DIFF: <list the touched doc paths>"
+
+**If `CODEX_MODE: ready` — run Codex:**
+
+```bash
+TMPERR_DOC=$(mktemp /tmp/codex-docreview-XXXXXXXX)
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+codex exec "<prompt>" -C "$_REPO_ROOT" -s read-only -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null 2>"$TMPERR_DOC"
+```
+
+Use a 5-minute timeout (`timeout: 300000`). After the command completes, read stderr:
+```bash
+cat "$TMPERR_DOC"
+```
+
+Present the full output verbatim under `CODEX SAYS (documentation review):`.
+
+**Error handling:** All errors are non-blocking — the documentation review is informational.
+- Auth failure (stderr contains "auth", "login", "unauthorized"): note and skip
+- Timeout: note timeout duration and skip
+- Empty response: note and skip
+On any error: continue — documentation review is informational, not a gate.
+
+**If `CODEX_MODE: not_installed` or `not_authed` (or Codex errored at runtime):**
+
+Dispatch via the Agent tool with the same prompt. Bound it at a 5-minute timeout.
+Present findings under `DOCUMENTATION REVIEW (Claude subagent):`. If it fails: "Doc review unavailable. Continuing."
+
+**Apply decision (T3B — informational, never auto-edit, but findings don't evaporate).**
+If there are zero findings, say "Docs match what shipped — no gaps." and continue. Otherwise
+present the findings, then use AskUserQuestion ONCE:
+
+> "The doc review found N gaps between the docs and what shipped. How do you want to handle them?"
+>
+> RECOMMENDATION: Choose A if the gaps are concrete doc fixes (stale path, missing flag). The
+> doc review only reports; nothing is edited without your say-so. Completeness: A=9/10, B=4/10, C=8/10.
+
+Options:
+- A) Apply all the doc fixes now
+- B) Skip — leave docs as-is
+- C) Decide per-finding
+
+On A or per-finding approvals, make the approved edits yourself (the tool never silently
+rewrites docs). On B, note the gaps in the output so they're visible.
+
+**Persist the result:**
+```bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-doc-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","source":"SOURCE","commit":"'"$(git rev-parse --short HEAD)"'"}'
+```
+Substitute: STATUS = "clean" if no gaps, "issues_found" if gaps exist. SOURCE = "codex" if Codex ran, "claude" if the subagent ran.
+
+**Cleanup:** Run `rm -f "$TMPERR_DOC"` after processing (if Codex was used).
+
+---

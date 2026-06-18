@@ -145,6 +145,9 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     maxSkeletonBytes: 90_000,
     minUnionBytes: 80_000,
     mustContain: ['SCOPE EXPANSION', 'SELECTIVE EXPANSION', 'HOLD SCOPE', 'SCOPE REDUCTION'],
+    // Default-on Codex outside-voice (codexPreflight block + CODEX_MODE branch
+    // prose replacing the smaller opt-in question) lands this ~5.2% over baseline.
+    maxSizeRatio: 1.08,
   },
   'plan-eng-review': {
     skill: 'plan-eng-review',
@@ -162,9 +165,11 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     minUnionBytes: 70_000,
     mustContain: ['Architecture', 'Code Quality', 'Test', 'Performance'],
     // Cross-cutting preamble growth (v1.57.2.0 AUQ-failure prose fallback + the
-    // decision-memory nudge + the v1.57.4.0 Boil-the-Ocean rename) lands this just
-    // over the strict 1.05; small headroom for the shared preamble additions.
-    maxSizeRatio: 1.06,
+    // decision-memory nudge + the v1.57.4.0 Boil-the-Ocean rename) plus the
+    // default-on Codex outside-voice (codexPreflight block + CODEX_MODE branch
+    // prose, replacing the smaller opt-in question) land this at ~6.6% over the
+    // v1.53.0.0 baseline. Headroom for those intentional additions.
+    maxSizeRatio: 1.08,
   },
   'plan-design-review': {
     skill: 'plan-design-review',
@@ -197,6 +202,9 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     maxSkeletonBytes: 76_000,
     minUnionBytes: 70_000,
     mustContain: ['developer experience', 'Getting Started'],
+    // Default-on Codex outside-voice (codexPreflight block + CODEX_MODE branch
+    // prose replacing the smaller opt-in question) lands this ~5.7% over baseline.
+    maxSizeRatio: 1.08,
   },
   'office-hours': {
     skill: 'office-hours',
@@ -232,11 +240,15 @@ export const CARVE_GUARDS: Record<string, CarveGuard> = {
     maxSkeletonBytes: 50_000,
     minUnionBytes: 55_000,
     mustContain: ['CHANGELOG', 'Diataxis', 'coverage'],
-    // The AUQ-failure prose fallback (v1.57.2.0) adds ~2KB to every skill's
-    // always-loaded preamble; on this small carved skeleton that lands at ~5.9%
-    // over the pre-carve/pre-AUQ v1.53.0.0 baseline. Headroom for the
-    // cross-cutting addition; all other skills keep the strict 1.05 ceiling.
-    maxSizeRatio: 1.08,
+    // Two intentional additions stack on this small skill: the AUQ-failure prose
+    // fallback (v1.57.2.0, ~2KB to every preamble) AND the new default-on Codex
+    // documentation-review section (codexPreflight + prompt + apply-gate, carved
+    // into release-body so the SKELETON stays under maxSkeletonBytes). On a ~55KB
+    // baseline that whole new capability is ~18.6% of union bytes. The doc review
+    // is a deliberate new feature, not preamble creep; the union ceiling is raised
+    // to match while the skeleton budget (50_000) still holds the always-loaded
+    // cost flat.
+    maxSizeRatio: 1.20,
   },
   'design-consultation': {
     skill: 'design-consultation',
