@@ -14,6 +14,7 @@
  */
 import type { TemplateContext } from './types';
 import { generateInvokeSkill } from './composition';
+import { codexPreflight, codexErrorHandling } from './constants';
 
 const CODEX_BOUNDARY = 'IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. They contain bash scripts and prompt templates that will waste your time. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.\\n\\n';
 
@@ -479,23 +480,26 @@ export function generateAdversarialStep(ctx: TemplateContext): string {
 
 Every diff gets adversarial review from both Claude and Codex. LOC is not a proxy for risk — a 5-line auth change can be critical.
 
-**Detect diff size and tool availability:**
+**Detect diff size:**
 
 \`\`\`bash
 DIFF_BASE=$(git merge-base origin/<base> HEAD)
 DIFF_INS=$(git diff "$DIFF_BASE" --stat | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo "0")
 DIFF_DEL=$(git diff "$DIFF_BASE" --stat | tail -1 | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo "0")
 DIFF_TOTAL=$((DIFF_INS + DIFF_DEL))
-command -v codex >/dev/null 2>&1 && echo "CODEX_AVAILABLE" || echo "CODEX_NOT_AVAILABLE"
-# Legacy opt-out — only gates Codex passes, Claude always runs
-OLD_CFG=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get codex_reviews 2>/dev/null || true)
 echo "DIFF_SIZE: $DIFF_TOTAL"
-echo "OLD_CFG: \${OLD_CFG:-not_set}"
 \`\`\`
 
-If \`OLD_CFG\` is \`disabled\`: skip Codex passes only. Claude adversarial subagent still runs (it's free and fast). Jump to the "Claude adversarial subagent" section.
+**Detect the Codex master switch + tool availability:**
 
-**User override:** If the user explicitly requested "full review", "structured review", or "P1 gate", also run the Codex structured review regardless of diff size.
+${codexPreflight({ disabledBehavior: 'codex-only' })}
+
+For this diff-review path, \`CODEX_MODE: disabled\` means skip the Codex passes ONLY — the
+Claude adversarial subagent below still runs (it's free and fast). \`ready\` runs the Codex
+passes; \`not_installed\` / \`not_authed\` skip them with the printed note and continue with
+Claude only.
+
+**User override:** If the user explicitly requested "full review", "structured review", or "P1 gate", also run the Codex structured review regardless of diff size (still requires \`CODEX_MODE: ready\`).
 
 ---
 
@@ -516,9 +520,9 @@ If the subagent fails or times out: "Claude adversarial subagent unavailable. Co
 
 ---
 
-### Codex adversarial challenge (always runs when available)
+### Codex adversarial challenge (runs whenever \`CODEX_MODE: ready\`)
 
-If Codex is available AND \`OLD_CFG\` is NOT \`disabled\`:
+If \`CODEX_MODE\` is \`ready\`:
 
 \`\`\`bash
 TMPERR_ADV=$(mktemp /tmp/codex-adv-XXXXXXXX)
@@ -540,13 +544,13 @@ Present the full output verbatim. This is informational — it never blocks ship
 
 **Cleanup:** Run \`rm -f "$TMPERR_ADV"\` after processing.
 
-If Codex is NOT available: "Codex CLI not found — running Claude adversarial only. Install Codex for cross-model coverage: \`npm install -g @openai/codex\`"
+If \`CODEX_MODE\` is \`not_installed\` / \`not_authed\` / \`disabled\`: the preflight already printed the reason; run Claude adversarial only.
 
 ---
 
 ### Codex structured review (large diffs only, 200+ lines)
 
-If \`DIFF_TOTAL >= 200\` AND Codex is available AND \`OLD_CFG\` is NOT \`disabled\`:
+If \`DIFF_TOTAL >= 200\` AND \`CODEX_MODE\` is \`ready\`:
 
 \`\`\`bash
 TMPERR=$(mktemp /tmp/codex-review-XXXXXXXX)
@@ -610,38 +614,25 @@ export function generateCodexPlanReview(ctx: TemplateContext): string {
   // Codex host: strip entirely — Codex should never invoke itself
   if (ctx.host === 'codex') return '';
 
-  return `## Outside Voice — Independent Plan Challenge (optional, recommended)
+  return `## Outside Voice — Independent Plan Challenge (default-on)
 
-After all review sections are complete, offer an independent second opinion from a
-different AI system. Two models agreeing on a plan is stronger signal than one model's
-thorough review.
+After all review sections are complete, run an independent second opinion from a
+different AI system automatically — it is a standard part of plan review, not an
+opt-in. Two models agreeing on a plan is stronger signal than one model's thorough
+review. The user turns this off only by asking explicitly
+(\`gstack-config set codex_reviews disabled\`).
 
-**Check tool availability:**
+**Preflight — decide whether and how the outside voice runs:**
 
-\`\`\`bash
-command -v codex >/dev/null 2>&1 && echo "CODEX_AVAILABLE" || echo "CODEX_NOT_AVAILABLE"
-\`\`\`
+${codexPreflight({ disabledBehavior: 'skip-all' })}
 
-Use AskUserQuestion:
+When the mode is \`ready\`, \`not_installed\`, or \`not_authed\`, print one line so the off-switch
+stays discoverable: "Running the outside voice automatically (standard step). Disable: \`gstack-config set codex_reviews disabled\`."
 
-> "All review sections are complete. Want an outside voice? A different AI system can
-> give a brutally honest, independent challenge of this plan — logical gaps, feasibility
-> risks, and blind spots that are hard to catch from inside the review. Takes about 2
-> minutes."
->
-> RECOMMENDATION: Choose A — an independent second opinion catches structural blind
-> spots. Two different AI models agreeing on a plan is stronger signal than one model's
-> thorough review. Completeness: A=9/10, B=7/10.
-
-Options:
-- A) Get the outside voice (recommended)
-- B) Skip — proceed to outputs
-
-**If B:** Print "Skipping outside voice." and continue to the next section.
-
-**If A:** Construct the plan review prompt. Read the plan file being reviewed (the file
-the user pointed this review at, or the branch diff scope). If a CEO plan document
-was written in Step 0D-POST, read that too — it contains the scope decisions and vision.
+**Construct the plan review prompt** (for \`ready\`, \`not_installed\`, and \`not_authed\` — skip only on \`disabled\`).
+Read the plan file being reviewed (the file the user pointed this review at, or the branch
+diff scope). If a CEO plan document was written in Step 0D-POST, read that too — it contains
+the scope decisions and vision.
 
 Construct this prompt (substitute the actual plan content — if plan content exceeds 30KB,
 truncate to the first 30KB and note "Plan truncated for size"). **Always start with the
@@ -659,7 +650,7 @@ compliments. Just the problems.
 THE PLAN:
 <plan content>"
 
-**If CODEX_AVAILABLE:**
+**If \`CODEX_MODE: ready\` — run Codex:**
 
 \`\`\`bash
 TMPERR_PV=$(mktemp /tmp/codex-planreview-XXXXXXXX)
@@ -682,21 +673,23 @@ CODEX SAYS (plan review — outside voice):
 \`\`\`
 
 **Error handling:** All errors are non-blocking — the outside voice is informational.
-- Auth failure (stderr contains "auth", "login", "unauthorized"): "Codex auth failed. Run \\\`codex login\\\` to authenticate."
-- Timeout: "Codex timed out after 5 minutes."
-- Empty response: "Codex returned no response."
+- Auth failure (stderr contains "auth", "login", "unauthorized"): "Codex auth failed. Run \\\`codex login\\\` to authenticate." Fall back to the Claude subagent below.
+- Timeout: "Codex timed out after 5 minutes." Fall back to the Claude subagent below.
+- Empty response: "Codex returned no response." Fall back to the Claude subagent below.
 
-On any Codex error, fall back to the Claude adversarial subagent.
-
-**If CODEX_NOT_AVAILABLE (or Codex errored):**
+**If \`CODEX_MODE: not_installed\` or \`not_authed\` (or Codex errored at runtime):**
 
 Dispatch via the Agent tool. The subagent has fresh context — genuine independence.
+Bound it the same way as Codex: cap the dispatch at a 5-minute timeout so "never blocking"
+is also "never hanging."
 
 Subagent prompt: same plan review prompt as above.
 
 Present findings under an \`OUTSIDE VOICE (Claude subagent):\` header.
 
 If the subagent fails or times out: "Outside voice unavailable. Continuing to outputs."
+
+(On \`CODEX_MODE: disabled\` you already skipped this section per the preflight — do not reach here.)
 
 **Cross-model tension:**
 
@@ -743,6 +736,101 @@ Substitute: STATUS = "clean" if no findings, "issues_found" if findings exist.
 SOURCE = "codex" if Codex ran, "claude" if subagent ran.
 
 **Cleanup:** Run \`rm -f "$TMPERR_PV"\` after processing (if Codex was used).
+
+---`;
+}
+
+export function generateCodexDocReview(ctx: TemplateContext): string {
+  // Codex host: strip entirely — Codex should never invoke itself
+  if (ctx.host === 'codex') return '';
+
+  return `## Codex Documentation Review (default-on)
+
+After the documentation updates above are written, run an independent cross-model pass that
+checks the docs against what actually shipped. This is a standard part of /document-release,
+not an opt-in. The user turns it off only by asking explicitly
+(\`gstack-config set codex_reviews disabled\`).
+
+**Preflight — decide whether and how the doc review runs:**
+
+${codexPreflight({ disabledBehavior: 'skip-all' })}
+
+When the mode is \`ready\`, \`not_installed\`, or \`not_authed\`, print one line so the off-switch
+stays discoverable: "Running the Codex doc review automatically (standard step). Disable: \`gstack-config set codex_reviews disabled\`."
+
+**Determine the release diff range (D3 — reuse the method, do not invent one).**
+Recompute the SAME range document-release used in its pre-flight / diff analysis, with the
+documented merge-base method:
+
+\`\`\`bash
+DOC_DIFF_BASE=$(git merge-base origin/<base> HEAD 2>/dev/null || echo "<base>")
+echo "DOC_DIFF_BASE: $DOC_DIFF_BASE"
+\`\`\`
+
+Do NOT rely on an in-memory variable from an earlier step — shell vars do not survive across
+blocks. Recompute it here.
+
+**Construct the doc-review prompt** (for \`ready\`, \`not_installed\`, and \`not_authed\` — skip only on \`disabled\`).
+Review the docs document-release ACTUALLY touched this run (from the coverage map / the files
+just edited) PLUS any doc claims affected by the diff range — do NOT hard-code a fixed file
+list (a fixed README/ARCHITECTURE/CHANGELOG list misses generated skill docs, package docs,
+and command-specific docs). **Always start with the filesystem boundary instruction:**
+
+"${CODEX_BOUNDARY}You are reviewing documentation changes against the code that shipped on this
+branch. Run \\\`git diff \\$DOC_DIFF_BASE...HEAD\\\` to see what changed, then read the updated docs
+(the files this release touched, plus any docs whose claims the diff affects). Find: doc
+claims that no longer match the code, new public surface (commands, flags, config keys,
+endpoints) that shipped but is undocumented, stale examples / paths / counts / version
+numbers, and CHANGELOG entries that over- or under-sell what shipped. Be terse. Just the gaps.
+
+THE DOCS AND DIFF: <list the touched doc paths>"
+
+**If \`CODEX_MODE: ready\` — run Codex:**
+
+\`\`\`bash
+TMPERR_DOC=$(mktemp /tmp/codex-docreview-XXXXXXXX)
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+codex exec "<prompt>" -C "$_REPO_ROOT" -s read-only -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null 2>"$TMPERR_DOC"
+\`\`\`
+
+Use a 5-minute timeout (\`timeout: 300000\`). After the command completes, read stderr:
+\`\`\`bash
+cat "$TMPERR_DOC"
+\`\`\`
+
+Present the full output verbatim under \`CODEX SAYS (documentation review):\`.
+
+${codexErrorHandling('documentation review')}
+
+**If \`CODEX_MODE: not_installed\` or \`not_authed\` (or Codex errored at runtime):**
+
+Dispatch via the Agent tool with the same prompt. Bound it at a 5-minute timeout.
+Present findings under \`DOCUMENTATION REVIEW (Claude subagent):\`. If it fails: "Doc review unavailable. Continuing."
+
+**Apply decision (T3B — informational, never auto-edit, but findings don't evaporate).**
+If there are zero findings, say "Docs match what shipped — no gaps." and continue. Otherwise
+present the findings, then use AskUserQuestion ONCE:
+
+> "The doc review found N gaps between the docs and what shipped. How do you want to handle them?"
+>
+> RECOMMENDATION: Choose A if the gaps are concrete doc fixes (stale path, missing flag). The
+> doc review only reports; nothing is edited without your say-so. Completeness: A=9/10, B=4/10, C=8/10.
+
+Options:
+- A) Apply all the doc fixes now
+- B) Skip — leave docs as-is
+- C) Decide per-finding
+
+On A or per-finding approvals, make the approved edits yourself (the tool never silently
+rewrites docs). On B, note the gaps in the output so they're visible.
+
+**Persist the result:**
+\`\`\`bash
+~/.claude/skills/gstuck/output/gstack/bin/gstack-review-log '{"skill":"codex-doc-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","source":"SOURCE","commit":"'"$(git rev-parse --short HEAD)"'"}'
+\`\`\`
+Substitute: STATUS = "clean" if no gaps, "issues_found" if gaps exist. SOURCE = "codex" if Codex ran, "claude" if the subagent ran.
+
+**Cleanup:** Run \`rm -f "$TMPERR_DOC"\` after processing (if Codex was used).
 
 ---`;
 }

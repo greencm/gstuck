@@ -210,7 +210,11 @@ const MONOLITH_INVARIANTS: ParityInvariant[] = [
     skill: 'review',
     mustContain: ['confidence', 'P1', 'P2'],
     mustHaveHeadings: ['## Preamble', '## When to invoke'],
-    maxSizeRatio: 1.05,
+    // The adversarial step swapped its bare `command -v codex` check for the shared
+    // codexPreflight() block (install + auth tri-state + CODEX_MODE branch prose),
+    // landing ~6.3% over the v1.53.0.0 baseline. Intentional: it adds proper
+    // not-installed vs not-authed handling, not slop.
+    maxSizeRatio: 1.08,
     minBytes: 70_000,
   },
   {
