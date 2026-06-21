@@ -2374,3 +2374,41 @@ Pre-existing in `auq-sdk-capture.ts` — affects `skill-e2e-ship-section-loading
 path to the fixture during the run.
 
 **Effort:** S (human ~3h, CC ~30min). **Depends on:** None.
+
+### P3: Content-hash diagram render cache for make-pdf
+
+**What:** Cache rendered diagram SVG/PNG in `~/.gstack/cache/diagram-render/`,
+keyed on `sha256(fence source + bundle version + render options)`, so repeat
+`make-pdf` runs skip the browse render tab for unchanged diagrams.
+
+**Why:** Every run currently re-renders every fence (~150-300ms each). Docs with
+10+ diagrams pay seconds per iteration during write-preview loops. Codex
+outside-voice flagged the missing cache story during the eng review of the
+diagram engine plan (2026-06-11, D7).
+
+**Context:** The diagram-render bundle ships a `BUILD_INFO.json` with a content
+hash (see `lib/diagram-render/`) — use that as the bundle-version cache key
+component so bundle bumps invalidate cleanly. Invalidation surface is the main
+risk: stale renders after a mermaid theme change must not survive. Only worth
+building once users hit multi-diagram docs; wedge perf is fine without it.
+
+**Effort:** S (human ~1d, CC ~30min). **Depends on:** diagram engine wedge
+shipping (lib/diagram-render bundle versioning).
+
+### P3: Dedupe the make-pdf e2e gate-test harness
+
+**What:** Five e2e files (`combined-gate`, `emoji-gate`, `diagram-gate`,
+`landscape-gate`, `format-gate`) each hand-roll the same prerequisite probe
+(binary/browse/poppler checks with CI hard-fail vs local skip), mkdtemp/rm
+lifecycle, and child-timeout constants. Extract a shared
+`make-pdf/test/e2e/helpers.ts` (prerequisites(), withWorkDir(), runGenerate()).
+
+**Why:** Review-army maintainability finding on v1.58.0.0 — the boilerplate
+diverges a little more with each new gate (diagram-gate now captures stderr
+via Bun.spawnSync while the others use execFileSync), and a future fix to the
+CI-hard-fail contract has to land five times.
+
+**Context:** Deferred at ship time (D8.2) because it's test-only churn across
+five green files at the tail of a release. Zero user-facing value; pure DRY.
+
+**Effort:** S (human ~3h, CC ~20min). **Depends on:** None.
