@@ -36,6 +36,11 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
   'browse-basic':    ['browse/src/**', 'browse/test/test-server.ts'],
   'browse-snapshot': ['browse/src/**', 'browse/test/test-server.ts'],
 
+  // Hermetic isolation canaries (hermetic-env.ts is also a GLOBAL touchfile;
+  // these entries exist so the canaries themselves stay tier-classified)
+  'hermetic-canary':   ['test/helpers/hermetic-env.ts', 'test/helpers/session-runner.ts', 'test/skill-e2e-hermetic-canary.test.ts', 'lib/conductor-env-shim.ts'],
+  'hermetic-sentinel': ['test/helpers/hermetic-env.ts', 'test/helpers/session-runner.ts', 'test/skill-e2e-hermetic-canary.test.ts', 'lib/conductor-env-shim.ts'],
+
   // SKILL.md setup + preamble (depend on ROOT SKILL.md + gen-skill-docs)
   'skillmd-setup-discovery':  ['SKILL.md', 'SKILL.md.tmpl', 'scripts/gen-skill-docs.ts'],
   'skillmd-no-local-binary':  ['SKILL.md', 'SKILL.md.tmpl', 'scripts/gen-skill-docs.ts'],
@@ -111,7 +116,12 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
   // written a never-ask preference, AUQ should still auto-decide rather than
   // surfacing the question. Touches the question-tuning + preference
   // infrastructure plus the resolvers that own the AUTO_DECIDE preamble.
-  'auto-decide-preserved':        ['scripts/resolvers/question-tuning.ts', 'scripts/resolvers/preamble/generate-ask-user-format.ts', 'scripts/resolvers/preamble/generate-completion-status.ts', 'plan-ceo-review/**', 'bin/gstack-question-preference', 'bin/gstack-config', 'bin/gstack-slug', 'test/helpers/claude-pty-runner.ts'],
+  'auto-decide-preserved':        ['scripts/resolvers/question-tuning.ts', 'scripts/resolvers/preamble/generate-ask-user-format.ts', 'scripts/resolvers/preamble/generate-preamble-bash.ts', 'scripts/resolvers/preamble/generate-completion-status.ts', 'plan-ceo-review/**', 'bin/gstack-question-preference', 'bin/gstack-config', 'bin/gstack-slug', 'hosts/claude/hooks/question-preference-hook.ts', 'lib/is-conductor.ts', 'test/helpers/claude-pty-runner.ts'],
+
+  // Conductor → prose decision brief (Conductor signal makes prose the default;
+  // the PreToolUse hook denies the flaky tool). Touches the resolver that owns
+  // the Conductor rule, the preamble signal, the hook, and the detection helper.
+  'conductor-prose':              ['scripts/resolvers/preamble/generate-ask-user-format.ts', 'scripts/resolvers/preamble/generate-preamble-bash.ts', 'scripts/resolvers/preamble.ts', 'plan-eng-review/**', 'hosts/claude/hooks/question-preference-hook.ts', 'lib/is-conductor.ts', 'test/helpers/claude-pty-runner.ts', 'test/skill-e2e-conductor-prose.test.ts'],
 
   // Real-PTY E2E batch (#6 new tests on the harness).
   // Each one tests behavior the SDK harness can't observe (rendered TTY,
@@ -437,6 +447,11 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
   'browse-basic': 'gate',
   'browse-snapshot': 'gate',
 
+  // Hermetic isolation — gate (deterministic env/config assertions; if the
+  // clean room breaks, every other eval's signal is contaminated)
+  'hermetic-canary': 'gate',
+  'hermetic-sentinel': 'gate',
+
   // SKILL.md setup — gate (if setup breaks, no skill works)
   'skillmd-setup-discovery': 'gate',
   'skillmd-no-local-binary': 'gate',
@@ -510,6 +525,7 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
   // v1.21+ auto-mode regression tests
   'office-hours-auto-mode': 'gate',
   'auto-decide-preserved': 'periodic',
+  'conductor-prose': 'periodic',
   'e2e-harness-audit': 'gate',
 
   // Real-PTY E2E batch — tier classification:
@@ -785,6 +801,7 @@ export const LLM_JUDGE_TOUCHFILES: Record<string, string[]> = {
  */
 export const GLOBAL_TOUCHFILES = [
   'test/helpers/session-runner.ts',  // All E2E tests use this runner
+  'test/helpers/hermetic-env.ts',    // Changes every E2E child's environment
   'test/helpers/eval-store.ts',      // All E2E tests store results here
   'test/helpers/touchfiles.ts',      // Self-referential — reclassifying wrong is dangerous
 ];
