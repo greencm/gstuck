@@ -45,6 +45,47 @@ a silent mistake breaks all 52 skills. High blast radius — needs its own focus
 
 ## Test infrastructure
 
+### Eval harness: live progress + incremental result persistence (kill the silent hour)
+
+**Priority:** P1
+
+**What:** `bun run test:evals` is observably silent for its entire runtime and
+persists nothing until completion. Make the E2E harness (1) append a one-line
+progress record per test START and END to a well-known heartbeat file (e.g.
+`~/.gstack-dev/evals/.current-run.jsonl`), (2) write each test's eval-store
+result incrementally instead of only at run end, and (3) flush per-test
+pass/fail lines to stderr unbuffered so `bun test --concurrent` mega-file
+buffering can't hide 50 minutes of legitimate progress.
+
+**Why:** During the v1.57.11.0 ship, the diff-selected eval run (54 tests) was
+killed ~50 min in and NOTHING distinguished the corpse from a healthy run for
+hours: the log had zero test lines (per-file buffering across five mega
+`skill-e2e-*.test.ts` files), `~/.gstack-dev/evals/` had zero new files
+(results persist only on completion), and the only available liveness signal
+(`pgrep "bun test --max-concurrency"`) false-positives on every sibling
+free-suite shard. An agent or human watching the run has no honest signal.
+
+**Pros:** Dead runs detected in minutes instead of hours; partial results
+survive kills (a 50-min run that dies at test 40/54 keeps 40 results and can
+resume); `eval:watch` gets a real data source.
+
+**Cons:** Touches `test/helpers/session-runner.ts` + `eval-store.ts` (global
+touchfiles — change triggers ALL eval tests on the next diff-selected run);
+incremental writes need a PARTIAL marker so `eval:compare` doesn't treat a
+dead run as a complete baseline.
+
+**Context:** Root-caused 2026-06-12 during the v1.57.11.0 /ship. The run
+itself was on pace (~50 min for 54 E2E tests at concurrency 15 is nominal);
+the failure was pure observability. Related: the existing
+`project_e2e_harness_observability` note (stream-json reasoning + tool traces
+dropped on failure — same module, fix together). Start in
+`test/helpers/session-runner.ts` (per-test lifecycle) and
+`test/helpers/eval-store.ts` (persistence timing).
+
+**Depends on / blocked by:** Nothing. Classify the new behavior under the
+existing two-tier system; the heartbeat file must be safe under
+`--concurrent` (append-only, one JSON line per event).
+
 ### ✅ DONE (v1.53.1.0): Rebaseline parity-suite (v1.44.1 → v1.53.0.0)
 
 **What:** `test/parity-suite.test.ts` checked every skill's SKILL.md size against

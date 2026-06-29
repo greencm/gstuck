@@ -1,4 +1,4 @@
-## gstuck (based on upstream v1.58.3.0, sanitized 2026-06-26)
+## gstuck (based on upstream v1.58.4.0, sanitized 2026-06-29)
 
 ### Removed
 - Supabase telemetry system (all phone-home calls to frugpmstpnojnhfyimgv.supabase.co)
@@ -18,6 +18,55 @@
 ---
 
 # Changelog
+
+## [1.58.4.0] - 2026-06-18
+
+## **A community bug-fix wave plus a test-gate that finally sees the questions it was missing.**
+## **gbrain writes survive transaction-mode poolers, the redaction engine learns six more secret shapes, dashboards stop lying about zero, and the plan-review smokes detect asks the harness was blind to.**
+
+Two things ship here. First, the high-priority community bug wave: gbrain stopped force-enabling `GBRAIN_PREPARE` on transaction-mode poolers (which broke 100% of writes), a slow-but-healthy probe now classifies as `timeout` and lets sync proceed instead of silently skipping, the redaction engine gained six credential patterns, telemetry `error_message` runs through redaction before it leaves the machine, both the security and community dashboards stop reporting a fake `0` when the backend errors, and the Windows git-bash bins resolve their imports. Second, the plan-mode test gate: the real-PTY smokes for `/plan-eng-review`, `/plan-design-review`, and `/office-hours` were timing out on questions the skills had already rendered, because the terminal strips the cursor escapes that lay out the options. A new collapsed-form detector catches the ask in any render, the Haiku state-judge stops coin-flipping on a leftover spinner, and `/plan-eng-review` + `/plan-design-review` now confirm what to review before grinding a full audit on an empty repo.
+
+### The numbers that matter
+
+From the v1.58.4.0 diff against main and the CI eval matrix (`.github/workflows/evals.yml`, run 27780530109).
+
+| Metric | Before | After | Δ |
+|--------|--------|-------|---|
+| Credential shapes the redaction engine catches | (prior set) | +6 (GitLab, HuggingFace, npm, DigitalOcean, Bearer, GCP SA) | +6 |
+| Dashboards that can print a fake `0` on a backend error | 2 | 0 | -2 |
+| gstack skills whose gbrain writes break on a 6543 pooler | all | 0 | fixed |
+| PTY plan-mode smokes that timed out on an already-rendered question | 3 | 0 | -3 |
+| Reliably-green PTY smokes actually gated in CI | 0 | 4 | +4 |
+
+`office-hours` rendered its mode question at ~2m19s, well under the 300s budget, and the harness still scored the run a timeout because the option lines arrived collapsed (`A)` as `A(recommended)`, `Reply with A, B, or C` as `ReplywithA,B,orC`). The detector now reads both forms; 95 unit tests pin its contract.
+
+### What this means for gstack users
+
+If you run gbrain on a Supabase transaction-mode pooler, your writes work again. If you use `/ship`'s pre-push guard, it now fails closed on a git error and catches six more credential types before they leave your machine. If you run `/plan-eng-review` or `/plan-design-review`, they ask what to review first instead of spelunking your whole repo. The plan-review test gate stops flaking on its own blind spot. Nothing to do but upgrade.
+
+### Itemized changes
+
+#### Fixed
+- **gbrain on transaction-mode poolers:** removed the forced `GBRAIN_PREPARE=true` that deterministically broke writes on port-6543 poolers (#1965). An explicit user-set `GBRAIN_PREPARE` still passes through.
+- **gbrain probe timeout:** a probe that exceeds its deadline classifies as its own `timeout` status (15s default, `GSTACK_GBRAIN_PROBE_TIMEOUT_MS`-overridable); sync proceeds with a warning instead of silently suppressing brain features for a slow-but-healthy engine (#1964).
+- **Security + community dashboards:** backend errors now surface as "unknown — backend error" (or a 503), never a fake `0`; success responses carry a `status:"ok"` marker so legacy backends are flagged "unverified" (#1947).
+- **Telemetry:** `error_message` passes through the redaction engine at log time; on a redactor failure it fails closed to null (#1947).
+- **Windows git-bash:** `gstack-learnings-log` and `gstack-question-log` cygpath-normalize `$SCRIPT_DIR` so their `bun -e` imports resolve; learnings-log surfaces validation errors instead of swallowing them (#1950).
+- **`gstack-question-log`:** shares the audited injection-pattern list from `lib/jsonl-store.ts` instead of a local duplicate (#1934).
+- **Pre-push guard:** fails closed when the diff cannot be computed (git failure / maxBuffer kill), with a `GSTACK_REDACT_PREPUSH=skip` escape valve (#1946).
+- **PTY plan-mode smokes:** the harness detects a rendered AskUserQuestion even when stripAnsi collapses the option lines (markdown bold-bullet and lettered/numbered prose forms); the Haiku state-judge classifies WAITING when a question + reply-instruction is on screen despite an animating spinner. Fixes the office-hours, plan-eng, and plan-design plan-mode smokes that timed out on questions already displayed.
+- **ios-qa E2E:** isolated under `bun test --concurrent` (per-test work dirs, daemon paths passed as options not process-global env, afterAll cleanup) — fixes 3 real races.
+
+#### Added
+- **Six credential patterns in the redaction engine:** GitLab tokens, HuggingFace, npm, DigitalOcean, `Bearer` (entropy-gated), and GCP service-account JSON (#1946).
+- **Ask-first scope gate** in `/plan-eng-review` and `/plan-design-review`: the first action confirms the review target (branch diff / pasted plan / specific path) before any repo exploration or audit.
+- **`/ship` owns the pre-push guard install:** silent auto-install when the repo opts in, a one-time offer otherwise (#1946).
+
+#### For contributors
+- New collapsed-form prose-AUQ detector + judge spinner-precedence rule in `test/helpers/claude-pty-runner.ts`; 95 unit tests pin the two-signal contract.
+- The PTY model now pins to `EVALS_MODEL ?? claude-sonnet-4-6` (mirrors `session-runner.ts`), removing operator-model nondeterminism from the smokes.
+- Stochastic ask-first smokes (plan-eng/plan-design plan-mode + finding-floor) reclassified `periodic` per the non-deterministic-tests rule; the deterministic ones (office-hours, plan-mode-no-op) now run in CI via a new `e2e-pty-plan-smoke` matrix suite with an in-container skill-registry install step.
+- `redactFindingSpans()` is the machine-egress redaction entry point in `lib/redact-engine.ts`.
 
 ## [1.58.3.0] - 2026-06-18
 
