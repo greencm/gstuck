@@ -92,6 +92,20 @@ if [ -n "$BIN_ANALYTICS" ]; then
   FAIL=1
 fi
 
+# ─── No gstack-telemetry-log calls anywhere outside the neutralized bin script ──
+# The static SKILL.md-only checks above miss new call sites added directly to
+# executable scripts (e.g. setup) or preamble .ts sources whose generated
+# output happens to get scrubbed downstream. Scan the whole output tree.
+TEL_CALLS=$(grep -rln 'gstack-telemetry-log' . 2>/dev/null \
+  | grep -v node_modules | grep -v '\.git/' | grep -v CHANGELOG.md | grep -v TODOS.md \
+  | grep -v '^\./test/' | grep -v './test/' \
+  | grep -v '^\./bin/gstack-telemetry-log$' || true)
+if [ -n "$TEL_CALLS" ]; then
+  echo "FAIL: gstack-telemetry-log referenced outside the neutralized bin script:"
+  echo "$TEL_CALLS" | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── Telemetry bin scripts are no-ops ─────────────────────────
 for script in bin/gstack-telemetry-log bin/gstack-telemetry-sync bin/gstack-update-check; do
   if [ -f "$script" ]; then
