@@ -96,10 +96,15 @@ fi
 # The static SKILL.md-only checks above miss new call sites added directly to
 # executable scripts (e.g. setup) or preamble .ts sources whose generated
 # output happens to get scrubbed downstream. Scan the whole output tree.
+# browse/src/security.ts is excluded: it only mentions the binary name in
+# docstrings and in findTelemetryBinary/buildTelemetrySpawnCommand, which are
+# dead code now that reportAttemptTelemetry is nulled (verified by the
+# dedicated "reportAttemptTelemetry must be a no-op" check further below).
 TEL_CALLS=$(grep -rln 'gstack-telemetry-log' . 2>/dev/null \
   | grep -v node_modules | grep -v '\.git/' | grep -v CHANGELOG.md | grep -v TODOS.md \
-  | grep -v '^\./test/' | grep -v './test/' \
-  | grep -v '^\./bin/gstack-telemetry-log$' || true)
+  | grep -v 'test/' \
+  | grep -v '^\./bin/gstack-telemetry-log$' \
+  | grep -v '^\./browse/src/security\.ts$' || true)
 if [ -n "$TEL_CALLS" ]; then
   echo "FAIL: gstack-telemetry-log referenced outside the neutralized bin script:"
   echo "$TEL_CALLS" | sed 's/^/  /'
