@@ -308,6 +308,38 @@ for (const hook of ['careful/bin/check-careful.sh', 'freeze/bin/check-freeze.sh'
   }
 }
 
+// ─── Step 6b: Strip telemetry call from generate-first-run-guidance.ts ──────
+// v1.58+ added this resolver (first-task scaffold). Unlike its sibling
+// generator files it isn't a pure telemetry stub — most of it is legitimate
+// onboarding guidance — so gutPreambleSource can't blank the whole function.
+// Instead, remove just the gstack-telemetry-log invocation line at the
+// source, the same way it's removed from every generated .tmpl/.md file, so
+// the un-gutted call doesn't only disappear downstream via the SKILL.md
+// post-processing pass.
+const FIRST_RUN_GUIDANCE = 'scripts/resolvers/preamble/generate-first-run-guidance.ts';
+if (existsSync(FIRST_RUN_GUIDANCE)) {
+  removeLines(FIRST_RUN_GUIDANCE, ['gstack-telemetry-log']);
+  console.log(`  ${FIRST_RUN_GUIDANCE}: removed gstack-telemetry-log call`);
+}
+
+// ─── Step 6c: Strip onboarding telemetry call from setup ────────────────────
+// v1.58+ added an unconditional gstack-telemetry-log call to the first-run
+// welcome block in setup. It's a live executable that runs on every user's
+// install, so remove the whole conditional block (not just the call line —
+// leaving an empty `if ...; then\nfi` would be a bash syntax error).
+const SETUP_SCRIPT = 'setup';
+if (existsSync(SETUP_SCRIPT)) {
+  let src = readFile(SETUP_SCRIPT);
+  const cleaned = src.replace(
+    /[ \t]*#[ \t]*Best-effort onboarding telemetry.*\n[ \t]*if \[ -x "\$SOURCE_GSTACK_DIR\/bin\/gstack-telemetry-log" \]; then\n[ \t]*"\$SOURCE_GSTACK_DIR\/bin\/gstack-telemetry-log"[^\n]*\n[ \t]*fi\n/,
+    ''
+  );
+  if (cleaned !== src) {
+    writeFile(SETUP_SCRIPT, cleaned);
+    console.log('  setup: removed onboarding telemetry call');
+  }
+}
+
 // ─── Step 7: Point upgrade template at gstuck ─────────────────
 
 const UPGRADE_TMPL = 'gstack-upgrade/SKILL.md.tmpl';
