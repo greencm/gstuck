@@ -1229,7 +1229,12 @@ fi
 
 # 9. First-time welcome + legacy cleanup
 if [ ! -f "$HOME/.gstack/.welcome-seen" ]; then
-  log "  Welcome! Run /gstack-upgrade anytime to stay current."
+  log ""
+  log "  gstack is ready. First move:"
+  log "    New idea / empty repo?   /office-hours  or  /spec"
+  log "    Existing code?           /qa  to see it work, or  /investigate"
+  log "  (Run /gstack-upgrade anytime to stay current)"
+  log ""
   touch "$HOME/.gstack/.welcome-seen"
 fi
 rm -f /tmp/gstack-latest-version
