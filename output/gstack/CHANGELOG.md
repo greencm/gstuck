@@ -1,4 +1,4 @@
-## gstuck (based on upstream v1.60.1.0, sanitized 2026-07-18)
+## gstuck (based on upstream v1.60.1.0, sanitized 2026-07-22)
 
 ### Removed
 - Supabase telemetry system (all phone-home calls to frugpmstpnojnhfyimgv.supabase.co)
