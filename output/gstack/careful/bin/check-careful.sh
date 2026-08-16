@@ -30,7 +30,14 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # syntax or comments can hide an earlier destructive command, for example:
 #   rm -rf / # rm -rf node_modules
 # Unknown syntax fails closed and falls through to the destructive checks.
-if printf '%s' "$CMD" | grep -qE '^[[:space:]]*rm[[:space:]]+(-[a-zA-Z]*r[a-zA-Z]*[[:space:]]+|--recursive[[:space:]]+)(([^[:space:];&|#]*/)?(node_modules|\.next|dist|__pycache__|\.cache|build|\.turbo|coverage)[[:space:]]*)+$' 2>/dev/null; then
+# Two hardenings on top of the anchored shape (#2039 wave):
+#   - flag cluster accepts capital -R (BSD/macOS recursive), so a single
+#     `rm -Rf node_modules` stays allowed instead of prompting;
+#   - target tokens exclude `(` and backtick, so command substitution that
+#     ENDS in a whitelisted suffix (`rm -rf $(./wipe-all)/node_modules`)
+#     cannot ride the whitelist. Plain $VAR expansion (no parenthesis) is
+#     still allowed.
+if printf '%s' "$CMD" | grep -qE '^[[:space:]]*rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+|--recursive[[:space:]]+)(([^[:space:];&|#(`]*/)?(node_modules|\.next|dist|__pycache__|\.cache|build|\.turbo|coverage)[[:space:]]*)+$' 2>/dev/null; then
   echo '{}'
   exit 0
 fi
@@ -39,8 +46,8 @@ fi
 WARN=""
 PATTERN=""
 
-# rm -rf / rm -r / rm --recursive
-if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r|--recursive)' 2>/dev/null; then
+# rm -rf / rm -r / rm -R / rm --recursive (capital -R is BSD/macOS recursive)
+if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)' 2>/dev/null; then
   WARN="Destructive: recursive delete (rm -r). This permanently removes files."
   PATTERN="rm_recursive"
 fi
