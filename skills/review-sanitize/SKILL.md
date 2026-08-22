@@ -118,6 +118,8 @@ Filter against the known-safe allowlist below. Any URL NOT on this list is a fin
 - `api.supabase.com`, `supabase.com` — Supabase Management API used by user-initiated `/setup-gbrain` (user-provided PAT, not hardcoded telemetry)
 - `github.com` (bare host) — connectivity check in gstack-gbrain-install (user-initiated only)
 - `gitlab.com` — referenced in `.gitlab-ci.yml` CI config (upstream artifact, not executable in our context)
+- `api.openai.com` — `design/` skill's OpenAI calls, requires the user's own `OPENAI_API_KEY` (`requireApiKey`), not hardcoded
+- `api.anthropic.com` — used only by `gstack-context-bill --exact` (opt-in flag) to call `count_tokens`, requires a user-supplied API key, not hardcoded or automatic (added v1.64.0.0 review, PR #51)
 
 Anything not on this list needs justification. If it's a legitimate documentation
 reference, add it to the allowlist in this skill file as part of the PASS flow.
