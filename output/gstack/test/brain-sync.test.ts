@@ -34,7 +34,11 @@ function run(argv: string[], opts: { env?: Record<string, string>; input?: strin
   const bin = argv[0];
   const full = bin.startsWith('/') ? bin : path.join(BIN, bin);
   const res = spawnSync(full, argv.slice(1), {
-    env: { ...process.env, GSTACK_HOME: tmpHome, ...(opts.env || {}) },
+    // HOME is overridden too: gstack-artifacts-init writes
+    // $HOME/.gstack-artifacts-remote.txt (plain $HOME, not GSTACK_HOME), so
+    // without this every free-suite run clobbers the operator's real
+    // artifacts-remote pointer. Keep it inside tmpHome, which afterEach removes.
+    env: { ...process.env, HOME: tmpHome, GSTACK_HOME: tmpHome, ...(opts.env || {}) },
     encoding: 'utf-8',
     input: opts.input,
     cwd: ROOT,
@@ -56,13 +60,18 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(bareRemote, { recursive: true, force: true });
-  // Clean up any remote-helper file init may have written.
-  const remoteFile = path.join(os.homedir(), '.gstack-brain-remote.txt');
-  // Only remove if it points at OUR bare remote (don't clobber a real user file).
-  try {
-    const contents = fs.readFileSync(remoteFile, 'utf-8').trim();
-    if (contents === bareRemote) fs.unlinkSync(remoteFile);
-  } catch {}
+  // Clean up any remote-helper file init may have written. run() now pins
+  // HOME to tmpHome so these land inside the removed temp dir, but scrub the
+  // real home too as defense in depth — and cover BOTH the legacy brain-remote
+  // name and the current artifacts-remote name (init writes the latter).
+  for (const name of ['.gstack-brain-remote.txt', '.gstack-artifacts-remote.txt']) {
+    const remoteFile = path.join(os.homedir(), name);
+    // Only remove if it points at OUR bare remote (don't clobber a real user file).
+    try {
+      const contents = fs.readFileSync(remoteFile, 'utf-8').trim();
+      if (contents === bareRemote) fs.unlinkSync(remoteFile);
+    } catch {}
+  }
 });
 
 // ---------------------------------------------------------------
@@ -327,6 +336,72 @@ describe('gstack-brain-sync secret scan', () => {
     run(['gstack-brain-enqueue', leakPath]);
     const skip = fs.readFileSync(path.join(tmpHome, '.brain-skip.txt'), 'utf-8');
     expect(skip).toContain(leakPath);
+  });
+});
+
+// ---------------------------------------------------------------
+// Egress receipt gate: receipt-before-commit, queue intact on refusal
+// ---------------------------------------------------------------
+describe('gstack-brain-sync egress receipt gate', () => {
+  test('refused receipt leaves the queue intact, makes no commit, and next run retries', () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return; // chmod is advisory there
+    run(['gstack-artifacts-init', '--remote', bareRemote]);
+    run(['gstack-config', 'set', 'artifacts_sync_mode', 'full']);
+    fs.mkdirSync(path.join(tmpHome, 'projects', 'p'), { recursive: true });
+    fs.writeFileSync(path.join(tmpHome, 'projects/p/learnings.jsonl'),
+      '{"skill":"x","insight":"y","ts":"2026-04-22T10:00:00Z"}\n');
+    run(['gstack-brain-enqueue', 'projects/p/learnings.jsonl']);
+    const commitsBefore = git(['rev-list', '--count', 'HEAD']).stdout.trim();
+
+    // Make the receipt unwritable: security dir exists but is read-only.
+    // (artifacts-init may have created it already — mkdirSync's mode is a
+    // no-op on an existing dir, so chmod explicitly.)
+    fs.mkdirSync(path.join(tmpHome, 'security'), { recursive: true });
+    fs.chmodSync(path.join(tmpHome, 'security'), 0o500);
+    try {
+      const refused = run(['gstack-brain-sync', '--once']);
+      expect(refused.status).toBe(1);
+      // DX contract: problem + cause + fix, plain language.
+      expect(refused.stderr).toContain('NOT sent');
+      expect(refused.stderr).toContain('EGRESS_RECEIPT_FAILED');
+      expect(refused.stderr).toContain('Fix: chmod -R u+w');
+      expect(refused.stderr).toContain('ATTEMPTS to send off-machine');
+      // Queue intact (receipt is written BEFORE the commit consumes it).
+      const queue = fs.readFileSync(path.join(tmpHome, '.brain-queue.jsonl'), 'utf-8');
+      expect(queue).toContain('projects/p/learnings.jsonl');
+      // No local commit was created.
+      expect(git(['rev-list', '--count', 'HEAD']).stdout.trim()).toBe(commitsBefore);
+      // Nothing reached the remote.
+      const remoteLog = spawnSync('git', ['--git-dir=' + bareRemote, 'log', '--oneline'], { encoding: 'utf-8' });
+      expect(remoteLog.stdout).not.toMatch(/sync: 1 file/);
+      const status = JSON.parse(fs.readFileSync(path.join(tmpHome, '.brain-sync-status.json'), 'utf-8'));
+      expect(status.status).toBe('push_failed');
+      expect(status.message).toContain('EGRESS_RECEIPT_FAILED');
+    } finally {
+      fs.chmodSync(path.join(tmpHome, 'security'), 0o700);
+    }
+
+    // Next run (ledger writable again) drains the intact queue and pushes.
+    const retry = run(['gstack-brain-sync', '--once']);
+    expect(retry.status).toBe(0);
+    const log = spawnSync('git', ['--git-dir=' + bareRemote, 'log', '--oneline'], { encoding: 'utf-8' });
+    expect(log.stdout).toMatch(/sync: 1 file/);
+  });
+
+  test('successful push writes a git-class receipt before the send', () => {
+    run(['gstack-artifacts-init', '--remote', bareRemote]);
+    run(['gstack-config', 'set', 'artifacts_sync_mode', 'full']);
+    fs.mkdirSync(path.join(tmpHome, 'projects', 'p'), { recursive: true });
+    fs.writeFileSync(path.join(tmpHome, 'projects/p/learnings.jsonl'),
+      '{"skill":"x","insight":"y","ts":"2026-04-22T10:00:00Z"}\n');
+    run(['gstack-brain-enqueue', 'projects/p/learnings.jsonl']);
+    const r = run(['gstack-brain-sync', '--once']);
+    expect(r.status).toBe(0);
+    const ledger = fs.readFileSync(path.join(tmpHome, 'security', 'egress.jsonl'), 'utf-8');
+    const records = ledger.trim().split('\n').map((l) => JSON.parse(l));
+    const pushReceipt = records.find((rec) => rec.sink === 'brain-sync' && rec.payload_class === 'curated-memory-git-push');
+    expect(pushReceipt).toBeTruthy();
+    expect(pushReceipt.sha256).toBeNull(); // git owns the bytes
   });
 });
 

@@ -7,6 +7,7 @@
 import fs from "fs";
 import path from "path";
 import { requireApiKey } from "./auth";
+import { receiptedFetch } from "./receipted-fetch";
 import { parseBrief } from "./brief";
 import { normalizeIntFlag } from "./flag-utils";
 
@@ -67,7 +68,7 @@ export async function generateVariant(
     const timeout = setTimeout(() => controller.abort(), 240_000);
 
     try {
-      const response = await fetchFn("https://api.openai.com/v1/responses", {
+      const response = await receiptedFetch("variants-image-request", "https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
@@ -76,10 +77,10 @@ export async function generateVariant(
         body: JSON.stringify({
           model: "gpt-4o",
           input: prompt,
-          tools: [{ type: "image_generation", model: "gpt-image-2", size, quality }],
+          tools: [{ type: "image_generation", size, quality }],
         }),
         signal: controller.signal,
-      });
+      }, fetchFn);
 
       clearTimeout(timeout);
 
@@ -131,7 +132,7 @@ export async function generateVariant(
     } catch (err: any) {
       clearTimeout(timeout);
       if (err.name === "AbortError") {
-        return { path: outputPath, success: false, error: "Timeout (120s)" };
+        return { path: outputPath, success: false, error: "Timeout (240s)" };
       }
       lastError = err.message;
     }

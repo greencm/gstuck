@@ -74,6 +74,8 @@ if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then 
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
 _QUESTION_TUNING=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
+_UPDATE_CHECK=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get update_check 2>/dev/null || echo "true")
+echo "UPDATE_CHECK: $_UPDATE_CHECK"
   fi
 eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
@@ -373,8 +375,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-config"
+_BRAIN_SYNC_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-config"
 
 # /sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -483,8 +485,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 
@@ -1015,9 +1017,10 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   Duplicates → reject (P4). Borderline (3-5 files) → mark TASTE DECISION.
 - All 10 review sections: run fully, auto-decide each issue, log every decision.
 - Dual voices: always run BOTH Claude subagent AND Codex if available (P6).
-  Run them sequentially in foreground. First the Claude subagent (Agent tool,
-  foreground — do NOT use run_in_background), then Codex (Bash). Both must
-  complete before building the consensus table.
+  Run them sequentially in foreground. First the Claude subagent (Agent tool
+  with run_in_background: false — subagents default to BACKGROUND since
+  Claude Code v2.1.198, so the flag must be explicitly false), then Codex
+  (Bash). Both must complete before building the consensus table.
 
   **Codex CEO voice** (via Bash):
   ```bash
@@ -1528,8 +1531,12 @@ if command -v jq >/dev/null 2>&1; then
       # Filter to current branch + recent commits, then keep records for the
       # latest run_id only. (Single phase may have multiple files if the user
       # re-ran the review; aggregator takes the newest.)
+      # NOTE: bind .commit BEFORE the split pipe. Inside ($commits | split(...))
+      # the "." context is the resulting ARRAY, so a bare .commit there raises
+      # "Cannot index array with string" on every record — and the 2>/dev/null
+      # below swallows it, so the whole aggregation silently yields zero tasks.
       jq -c --arg branch "$BRANCH" --arg commits "$COMMITS_RECENT" \
-        'select(.branch == $branch and ($commits | split("|") | index(.commit) != null))' \
+        'select(.branch == $branch and ((.commit) as $c | ($commits | split("|") | index($c)) != null))' \
         "$f" 2>/dev/null >> "$ALL_JSONL" || true
     done < <(find "$TASKS_DIR" -maxdepth 1 -name "tasks-$phase-*.jsonl" 2>/dev/null | sort)
     # Reduce to latest run_id per phase

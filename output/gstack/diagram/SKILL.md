@@ -1,7 +1,7 @@
 ---
 name: diagram
 version: 1.0.0
-description: "Turn an English description (or mermaid source) into a diagram triplet: the source, an editable .excalidraw file you can open (gstack)"
+description: "Turn an English description (or mermaid source) into a diagram triplet: the source, an editable .excalidraw file you can open on excalidraw.com, and rendered SVG + PNG. (gstack)"
 allowed-tools:
   - Bash
   - Read
@@ -21,9 +21,8 @@ triggers:
 
 ## When to invoke this skill
 
-on excalidraw.com,
-and rendered SVG + PNG (clean mermaid style; the .excalidraw carries the
-hand-drawn aesthetic). Fully offline.
+The SVG/PNG use clean mermaid style; the
+.excalidraw carries the hand-drawn aesthetic. Fully offline.
 Use when asked to "make a diagram", "draw the architecture", "create a
 flowchart", "diagram this", or "visualize this flow".
 
@@ -67,6 +66,8 @@ if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then 
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
 _QUESTION_TUNING=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
+_UPDATE_CHECK=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get update_check 2>/dev/null || echo "true")
+echo "UPDATE_CHECK: $_UPDATE_CHECK"
   fi
 eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
@@ -366,8 +367,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-config"
+_BRAIN_SYNC_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-config"
 
 # /sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -476,8 +477,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 

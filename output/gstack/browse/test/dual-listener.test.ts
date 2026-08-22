@@ -57,7 +57,7 @@ describe('Tunnel path allowlist', () => {
     const paths = extractSetContents(SERVER_SRC, 'TUNNEL_PATHS');
     // These must never be on the tunnel surface
     const forbidden = [
-      '/health', '/welcome', '/cookie-picker',
+      '/health', '/extension-token', '/welcome', '/cookie-picker',
       '/inspector', '/inspector/pick', '/inspector/events', '/inspector/style',
       '/tunnel/start', '/tunnel/stop',
       '/pair', '/token', '/refs',
@@ -220,7 +220,9 @@ describe('/command tunnel command allowlist', () => {
       'return handleCommand(body, tokenInfo)'
     );
     expect(commandBlock).toContain("surface === 'tunnel'");
-    expect(commandBlock).toContain('canDispatchOverTunnel(body?.command)');
+    // Args-aware since the --out (disk write) tunnel ban: the dispatch gate
+    // takes both the command and its args.
+    expect(commandBlock).toContain('canDispatchOverTunnel(body?.command, body?.args)');
     expect(commandBlock).toContain('disallowed_command');
     expect(commandBlock).toContain('is not allowed over the tunnel surface');
     expect(commandBlock).toContain('status: 403');

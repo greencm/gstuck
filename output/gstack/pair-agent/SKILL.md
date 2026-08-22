@@ -67,6 +67,8 @@ if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then 
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
 _QUESTION_TUNING=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
+_UPDATE_CHECK=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get update_check 2>/dev/null || echo "true")
+echo "UPDATE_CHECK: $_UPDATE_CHECK"
   fi
 eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
@@ -366,8 +368,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-config"
+_BRAIN_SYNC_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-config"
 
 # /sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -476,8 +478,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 
@@ -824,23 +826,34 @@ Then tell the user:
 "Copy the block above and paste it into your other agent's chat. The setup key
 expires in 5 minutes."
 
-**If ngrok is installed but NOT authed:** Walk the user through authentication:
+**If ngrok is installed but NOT authed:** Walk the user through authentication.
+
+SECURITY: the ngrok authtoken must NEVER pass through this chat, a Bash tool
+call, or shell history — a token pasted here lands in the transcript (and
+anything the transcript syncs to). The user runs the auth command in their
+OWN terminal; you only verify the result.
 
 Tell the user:
-"ngrok is installed but not logged in. Let's fix that:
+"ngrok is installed but not logged in. Let's fix that — in your own terminal
+(not here; the token should never enter this chat):
 
 1. Go to https://dashboard.ngrok.com/get-started/your-authtoken
 2. Copy your auth token
-3. Come back here and I'll run the auth command for you."
+3. In YOUR terminal, run: ngrok config add-authtoken <paste your token>
+4. Tell me 'done' when finished."
 
-STOP here and wait for the user to provide their auth token.
+STOP here and wait for the user to say they've run it. Do NOT accept a pasted
+token; if the user pastes one anyway, tell them to rotate it at
+https://dashboard.ngrok.com (it's now in the transcript) and re-auth in their
+terminal with the new one.
 
-When they provide it, run:
+When they say done, verify without touching the token:
 ```bash
-ngrok config add-authtoken THEIR_TOKEN
+ngrok config check 2>/dev/null && echo "NGROK_AUTHED" || echo "NGROK_NOT_AUTHED"
 ```
 
-Then retry `$B pair-agent --client TARGET_HOST`.
+If `NGROK_AUTHED`: retry `$B pair-agent --client TARGET_HOST`.
+If still `NGROK_NOT_AUTHED`: ask them to re-run the command in their terminal.
 
 **If ngrok is NOT installed:** Walk the user through installation:
 

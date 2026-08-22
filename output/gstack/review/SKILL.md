@@ -70,6 +70,8 @@ if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then 
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
 _QUESTION_TUNING=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
+_UPDATE_CHECK=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get update_check 2>/dev/null || echo "true")
+echo "UPDATE_CHECK: $_UPDATE_CHECK"
   fi
 eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
@@ -369,8 +371,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-config"
+_BRAIN_SYNC_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-config"
 
 # /sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -479,8 +481,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 
@@ -997,7 +999,7 @@ Check whether this PR's claimed VERSION still points at a free slot in the queue
 BRANCH_VERSION=$(git show HEAD:VERSION 2>/dev/null | tr -d '\r\n[:space:]' || echo "")
 BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || echo main)
 BASE_VERSION=$(git show origin/$BASE_BRANCH:VERSION 2>/dev/null | tr -d '\r\n[:space:]' || echo "")
-QUEUE_JSON=$(bun run bin/gstack-next-version \
+QUEUE_JSON=$(bun run ~/.claude/skills/gstuck/output/gstack/bin/gstack-next-version \
   --base "$BASE_BRANCH" \
   --bump patch \
   --current-version "$BASE_VERSION" 2>/dev/null || echo '{"offline":true}')
@@ -1259,7 +1261,7 @@ CHECKLIST:
 
 **Subagent configuration:**
 - Use `subagent_type: "general-purpose"`
-- Do NOT use `run_in_background` — all specialists must complete before merge
+- Pass `run_in_background: false` on every specialist Agent call — subagents run in the BACKGROUND by default since Claude Code v2.1.198, and all specialists must complete before merge. (Merely omitting the flag no longer produces a foreground run; it must be explicitly false.)
 - If any specialist subagent fails or times out, log the failure and continue with results from successful specialists. Specialists are additive — partial results are better than no results.
 
 ---
@@ -1575,10 +1577,14 @@ If `CODEX_MODE` is `ready`:
 ```bash
 TMPERR_ADV=$(mktemp /tmp/codex-adv-XXXXXXXX)
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-codex exec "IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. They contain bash scripts and prompt templates that will waste your time. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.\n\nReview the changes on this branch against the base branch. Run DIFF_BASE=$(git merge-base origin/<base> HEAD) && git diff "$DIFF_BASE" to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption paths. Be adversarial. Be thorough. No compliments — just the problems. End your output with ONE line in the canonical format `Recommendation: <action> because <one-line reason naming the most exploitable finding>`. Generic reasons like 'because it's safer' do not qualify; the reason must point to a specific finding or no-fix rationale." -C "$_REPO_ROOT" -s read-only -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null 2>"$TMPERR_ADV"
+# Shell functions do not survive between Bash blocks, so re-source the probe
+# here. It defines _gstack_codex_timeout_wrapper (gtimeout -> timeout ->
+# unwrapped fallback), added in #1056 but never wired into this call site.
+source ~/.claude/skills/gstuck/output/gstack/bin/gstack-codex-probe 2>/dev/null || true
+_gstack_codex_timeout_wrapper 540 codex exec "IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. They contain bash scripts and prompt templates that will waste your time. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.\n\nReview the changes on this branch against the base branch. Run DIFF_BASE=$(git merge-base origin/<base> HEAD) && git diff "$DIFF_BASE" to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption paths. Be adversarial. Be thorough. No compliments — just the problems. End your output with ONE line in the canonical format `Recommendation: <action> because <one-line reason naming the most exploitable finding>`. Generic reasons like 'because it's safer' do not qualify; the reason must point to a specific finding or no-fix rationale." -C "$_REPO_ROOT" -s read-only -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null 2>"$TMPERR_ADV"
 ```
 
-Set the Bash tool's `timeout` parameter to `300000` (5 minutes). Do NOT use the `timeout` shell command — it doesn't exist on macOS. After the command completes, read stderr:
+Set the Bash tool's `timeout` parameter to `600000` (10 minutes). It sits ABOVE the 540s wrapper deliberately, so the wrapper fires first and a stall surfaces as a diagnosable exit 124 instead of a harness kill that returns nothing. The wrapper resolves `gtimeout`, then `timeout`, then runs unwrapped, so it is safe on a macOS without coreutils. After the command completes, read stderr:
 ```bash
 cat "$TMPERR_ADV"
 ```
@@ -1587,7 +1593,7 @@ Present the full output verbatim. This is informational — it never blocks ship
 
 **Error handling:** All errors are non-blocking — adversarial review is a quality enhancement, not a prerequisite.
 - **Auth failure:** If stderr contains "auth", "login", "unauthorized", or "API key": "Codex authentication failed. Run \`codex login\` to authenticate."
-- **Timeout:** "Codex timed out after 5 minutes."
+- **Timeout (exit 124):** "Codex exceeded 9 minutes and was terminated; this pass produced NO findings." A timed-out pass is MISSING COVERAGE, not a clean bill — say so explicitly rather than continuing as if Codex had reviewed. Whatever it produced before the cut is recoverable from that run's rollout log under `~/.codex/sessions/<YYYY>/<MM>/<DD>/`.
 - **Empty response:** "Codex returned no response. Stderr: <paste relevant error>."
 
 **Cleanup:** Run `rm -f "$TMPERR_ADV"` after processing.
@@ -1604,10 +1610,16 @@ If `DIFF_TOTAL >= 200` AND `CODEX_MODE` is `ready`:
 TMPERR=$(mktemp /tmp/codex-review-XXXXXXXX)
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 cd "$_REPO_ROOT"
-codex review "IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. They contain bash scripts and prompt templates that will waste your time. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.\n\nReview the changes on this branch against the base branch <base>. Run git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD to see the diff and review only those changes." -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null 2>"$TMPERR"
+# Shell functions do not survive between Bash blocks, so re-source the probe
+# here. It defines _gstack_codex_timeout_wrapper (gtimeout -> timeout ->
+# unwrapped fallback), added in #1056 but never wired into this call site.
+source ~/.claude/skills/gstuck/output/gstack/bin/gstack-codex-probe 2>/dev/null || true
+_gstack_codex_timeout_wrapper 540 codex review --base <base> -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null 2>"$TMPERR"
 ```
 
-Set the Bash tool's `timeout` parameter to `300000` (5 minutes). Do NOT use the `timeout` shell command — it doesn't exist on macOS. Present output under `CODEX SAYS (code review):` header.
+**No prompt argument.** `--base` is what scopes the review, and the positional `[PROMPT]` is mutually exclusive with it — passing both fails at argv parsing. Do NOT "fix" that error by dropping `--base` and keeping the prompt: a prompt-only `codex review` silently falls back to the **uncommitted working-tree** scope (`git status --short; git diff`), so it reviews the wrong changes and reports "no changes" on a clean tree. Prompt text describing the diff range does not change what the CLI feeds the reviewer. Unlike the adversarial pass above, which uses `codex exec` and really does run the git command it's told to, this path gets a pre-computed diff from the CLI — which is also why it needs no filesystem boundary.
+
+Set the Bash tool's `timeout` parameter to `600000` (10 minutes). It sits ABOVE the 540s wrapper deliberately, so the wrapper fires first and a stall surfaces as a diagnosable exit 124 instead of a harness kill that returns nothing. The wrapper resolves `gtimeout`, then `timeout`, then runs unwrapped, so it is safe on a macOS without coreutils. Present output under `CODEX SAYS (code review):` header.
 Check for `[P1]` markers: found → `GATE: FAIL`, not found → `GATE: PASS`.
 
 If GATE is FAIL, use AskUserQuestion:
