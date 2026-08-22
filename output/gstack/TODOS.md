@@ -875,32 +875,6 @@ plus a TTL so abandoned PTYs eventually exit.
 
 ---
 
-### v1.1+: Audit `/health` token distribution
-
-**What:** Codex's outside-voice review on cc-pty-import flagged that
-`/health` already surfaces `AUTH_TOKEN` to any localhost caller in headed
-mode (`server.ts:1657`). That's a pre-existing soft leak — anything
-running on localhost gets the root token by hitting `/health`.
-
-**Why:** cc-pty-import sidesteps it by NOT putting the PTY token there
-(uses an HttpOnly cookie path instead). But the underlying leak is still
-shippable surface. A second extension or a localhost web app could
-currently scrape `AUTH_TOKEN` and hit any browse-server endpoint.
-
-**Pros:** Closes a real privilege-escalation path on multi-extension
-machines. **Cons:** Either we tighten the gate (Origin must be OUR
-extension id, not just any chrome-extension://) or we move bootstrap
-discovery off `/health` entirely. Either has migration cost for tests
-and the existing extension.
-
-**Context:** codex finding #2 on cc-pty-import plan-eng review. Not in
-scope of that PR; deliberately deferred to keep PTY-import small.
-
-**Priority:** P2.
-**Effort:** M.
-
----
-
 ## Testing
 
 ## P2: Per-finding AskUserQuestion count assertion for /plan-ceo-review
@@ -2651,3 +2625,157 @@ CI-hard-fail contract has to land five times.
 five green files at the tail of a release. Zero user-facing value; pure DRY.
 
 **Effort:** S (human ~3h, CC ~20min). **Depends on:** None.
+
+## Egress-receipt follow-ups (filed via /plan-eng-review + /codex on the v1.63 port wave)
+
+### P2: egress ledger rotation with chain-genesis records
+
+**What:** Rotate `~/.gstack/security/egress.jsonl` at a size threshold (match
+`attempts.jsonl`'s 10MB/5-generation pattern in `browse/src/security.ts`), where
+each new generation's FIRST record embeds the prior file's tail hash so
+`gstack-egress verify` can walk across generations.
+
+**Why:** v1.63 ships WARN-at-25MB (visible growth) but nothing bounds the file.
+Rotation was deliberately deferred: it changes the verify contract, and a wrong
+implementation makes healthy ledgers verify as "broken".
+
+**Pros:** Bounded disk forever; verify stays meaningful across generations.
+**Cons:** Chain-genesis semantics are subtle; needs its own focused tests
+(cross-generation verify, mid-rotation crash).
+
+**Context:** `lib/egress-receipt.ts` (`appendChained`/`verifyLedger`) carries the
+design sketch in its rotation TODO comment. Start from the `attempts.jsonl`
+rotation precedent.
+
+**Effort:** S (human ~4h, CC ~25min). **Depends on:** v1.63 port wave landed.
+
+### P3: launch-nonce token bootstrap (local-process impersonation)
+
+**What:** Add a launch-time nonce to the `/extension-token` bootstrap: `browse`
+mints a nonce at headed launch, seeds it into the extension (CDP
+`chrome.storage` injection or a launcher-written sidecar), and the endpoint
+requires it alongside the pinned origin.
+
+**Why:** v1.63's pinned-origin check authenticates browser contexts; any local
+PROCESS can still forge an Origin header with curl. That threat is explicitly
+outside the current model (any local process can hit the port anyway) — this
+TODO documents the deliberate boundary and the designed path across it.
+
+**Pros:** Closes the local-process impersonation path (strongest of the three
+options evaluated in the v1.63 plan review).
+**Cons:** Largest bootstrap change; CDP seeding is fiddly across the three
+launch paths (`--load-extension`, baked-in Browser.app, real-Chrome fallback);
+low present-day value.
+
+**Context:** `browse/src/server.ts` `/extension-token` handler +
+`GSTACK_EXTENSION_ID`; launch paths in `browse/src/browser-manager.ts` (~358,
+~455, ~1562); `extension/background.js` bootstrap.
+
+**Effort:** M (human ~2 days, CC ~1h). **Depends on:** none.
+
+### P3: eval-watch shard-awareness
+
+**What:** Teach `scripts/eval-watch.ts` (hardcoded `_partial-e2e.json` path at
+~line 17) about the sharded layout: watch `<evalDir>/shards/*/_partial-e2e.json`
+and aggregate live progress across shard subdirs.
+
+**Why:** v1.63's sharded runner gives each shard its own eval subdir (so shards
+baseline against their own priors); `findPreviousRun`, `eval-compare`,
+`eval-list`, and `eval-summary` were all made shard-aware, but the live watcher
+intentionally stayed flat — it shows nothing during sharded runs.
+
+**Pros:** Live progress during `eval:bg:gate` sharded runs again.
+**Cons:** Multi-file watch + aggregation UI; low stakes (the run-scoped detach
+log already streams per-shard results).
+
+**Context:** `scripts/eval-watch.ts`; shard layout defined in
+`scripts/test-paid-shards.ts` (slug = test filename); `listEvalJsonFiles` in
+`test/helpers/eval-store.ts` already enumerates the layout — reuse it.
+
+**Effort:** S (human ~2h, CC ~15min). **Depends on:** v1.63 port wave landed.
+
+## v1.63 port-wave review follow-ups (deferred from /ship review army — non-blocking polish)
+
+Genuine review findings deferred from the v1.63 ship because they are
+informational/polish, not correctness-blocking, and several want their own
+tests. Filed so they are tracked, not dropped.
+
+- **P2 — telemetry-sync HTTP-status outcome is dead code.** `_GSTACK_EGRESS_LAST_RECEIPT`
+  parent-shell guard that would append the HTTP status to the receipt never fires. The
+  generic `exit:N` outcome is still recorded, so the ledger is correct, just less
+  precise. Fix: have `_receipted_curl` persist the receipt id to a caller-readable temp
+  file, or restructure the call out of the subshell. (Confirmed by 3 review specialists.)
+- **P2 — context-bill "TOTAL on disk" double-counts child skills** in a root-as-container
+  tree (this repo's own layout): `buildBill` sums the root skill's whole-tree walk plus
+  each child's subtree again (~2x the TOTAL line). ALWAYS-ON / EAGER / --diff / --budget
+  are all unaffected — only the informational TOTAL is wrong. Fix: compute the tree total
+  from a single deduplicated `walkMd(root)` pass, or exclude child dirs from the root
+  skill's `totalMd`. Needs a fixture test. (`lib/context-bill.ts`.)
+- **P3 — DRY/robustness polish:** one shared `_gstack_egress_host_of` helper for the
+  ~11 hand-rolled URL-to-host extractions across the egress shell sinks; extract the
+  duplicated tunnel-open `writeReceipt` block in `browse/src/server.ts` (two sites);
+  hoist the per-iteration `SharedArrayBuffer` alloc out of the egress-receipt lock spin;
+  replace context-bill's exact-mode `errorPct === 0` sentinel with an explicit flag;
+  reuse `frontmatterName()` from `skill-census.ts` in `catalog-budget.test.ts`.
+- **P3 — test-coverage gaps the audit named:** `PAID_TEST_GLOBS` ↔ `package.json`
+  `test:gate` parity test; `GSTACK_EXTENSION_ID` ↔ `manifest.json` key derivation parity
+  test (`browse/scripts/extension-id.ts`); a runner test asserting each shard child gets
+  its own `GSTACK_EVAL_DIR` under `shards/<slug>`; receipt-refusal branch tests for
+  supabase-provision / gbrain-sync / memory-ingest.
+
+## P2: harden or re-tier skill-e2e-plan-design-with-ui PTY detection
+
+**What:** The gate-tier `test/skill-e2e-plan-design-with-ui.test.ts` began executing
+for the first time once v1.63's `seedSkills` registered skills in hermetic PTY
+children (the fork had deleted this file; it measured nothing before). It now
+reliably TIMES OUT even though the skill runs correctly: the transcript shows
+`/plan-design-review` reaching its scope-gate AskUserQuestion (5 options, the
+`<gstack-qid:plan-design-review-scope-gate>` marker present), but the test's
+`isNumberedOptionListVisible`/`parseNumberedOptions` scraping can't classify it out
+of the PTY buffer because spinner frames (`[?25l✻Sprouting… still thinking`) are
+interleaved character-by-character with the option text.
+
+**Why:** Shipped behavior is correct — this is a test-harness detection limitation,
+not a product bug. But a gate test that always times out is worse than no test.
+
+**Fix options:** (a) harden the tail-scraping (drop DEC private-mode + spinner
+residue before matching; widen/clean the window); (b) add an LLM-judge fallback
+classifier (the file's own comments note the regex detectors are "brittle to PTY
+rendering quirks"); or (c) move this test to periodic until (a)/(b) lands.
+
+**Context:** `test/skill-e2e-plan-design-with-ui.test.ts`,
+`test/helpers/claude-pty-runner.ts:308` (`isNumberedOptionListVisible`). Evidence:
+`~/.gstack-dev/eval-runs/pdwu-verify-*.log`. **Effort:** M (human ~half day / CC ~30min).
+
+### P2: Follow-up fix waves from the 2026-08-14 tracker audit (v1.64.0.0)
+
+The full-tracker audit behind v1.64.0.0 verified every open PR/issue against
+main and consciously deferred four coherent fix waves. Audit records:
+`~/.gstack/projects/garrytan-gstack/` eng-review artifacts + the v1.64 PR body.
+
+**Wave A — browse-daemon lifecycle.** Watchdog kills headed handoff sessions
+(PRs 2565/2405/2346), macOS headed launch broken by the rebrand-invalidated
+Chromium signature + XProtect (issues 2554/2242/2138/1829/1379 — the three
+darwin-skipped handoff tests in browse/test/handoff.test.ts un-skip when this
+lands), busy-daemon kill (2219/2231), cosmetic SIGTERM ignore (2220),
+Playwright pin bump (PR 1761, #1703 — rebuilds the CI browser image).
+Start with the signature/re-sign question; everything else is small.
+
+**Wave B — install integrity.** connect-chrome alias shadowing (PR 2202,
+issues 2201/2511), Playwright bootstrap aborts/timeouts (PRs 2233/2359,
+issues 1902/2136), --host cursor/slate wiring (PRs 2547/2432, issue 2361),
+review checklist/specialists never copied (issues 2317/2518), Windows re-run
+refresh (#2444). Blast radius is `setup` — one focused PR.
+
+**Wave C — gbrain trust boundary.** Transcript trust/scope/source isolation
+(PR 2232, issue 2140), brain-sync queue truncation (#2549), worktree source
+pins (PR 2417, #2516), thin-client detection gaps (#2520/#2456), plus small
+absorbs (2371/2360/2406/2369/2368/2321). Needs never-double-store review.
+
+**Wave D — ship/version allocator.** Queue-down fallback (PRs 2545/2546),
+npm-invalid subdir manifest versions (PR 2531), versionless repos
+(2343/2334/2501, #1474), diff-scope specialist routing rewrite
+(#2526/#2299/#2455), /review token runaway (#2519).
+
+**Depends on:** v1.64.0.0 landing. Each wave is one bundled PR per the
+fix-wave pattern.

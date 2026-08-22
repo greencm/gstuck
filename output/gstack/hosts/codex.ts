@@ -29,6 +29,7 @@ const codex: HostConfig = {
     { from: '.claude/skills/gstuck/output/gstack', to: '.agents/skills/gstuck/output/gstack' },
     { from: '.claude/skills/review', to: '.agents/skills/gstuck/output/gstack/review' },
     { from: '.claude/skills', to: '.agents/skills' },
+    { from: 'CLAUDE.md', to: 'AGENTS.md' },
   ],
 
   suppressedResolvers: [

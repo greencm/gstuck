@@ -65,6 +65,8 @@ if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then 
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
 _QUESTION_TUNING=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
+_UPDATE_CHECK=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get update_check 2>/dev/null || echo "true")
+echo "UPDATE_CHECK: $_UPDATE_CHECK"
   fi
 eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
@@ -364,8 +366,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-config"
+_BRAIN_SYNC_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-config"
 
 # /sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -474,8 +476,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 
@@ -868,8 +870,11 @@ echo "$DEPLOY_CONFIG"
 
 # If config exists, parse it
 if [ "$DEPLOY_CONFIG" != "NO_CONFIG" ]; then
-  PROD_URL=$(echo "$DEPLOY_CONFIG" | grep -i "production.*url" | head -1 | sed 's/.*: *//')
-  PLATFORM=$(echo "$DEPLOY_CONFIG" | grep -i "platform" | head -1 | sed 's/.*: *//')
+  # Cut at the FIRST ": ", not the last. A greedy 's/.*: *//' ate the scheme of
+  # any URL: "Production URL: https://x.com" became "//x.com", because the last
+  # ":" belongs to "https:".
+  PROD_URL=$(echo "$DEPLOY_CONFIG" | grep -i "production.*url" | head -1 | sed 's/^[^:]*: *//')
+  PLATFORM=$(echo "$DEPLOY_CONFIG" | grep -i "platform" | head -1 | sed 's/^[^:]*: *//')
   echo "PERSISTED_PLATFORM:$PLATFORM"
   echo "PERSISTED_URL:$PROD_URL"
 fi
@@ -1082,7 +1087,7 @@ BASE_VERSION=$(git show origin/$BASE_BRANCH:VERSION 2>/dev/null | tr -d '\r\n[:s
 # We don't need the exact original level — we just need "a level" that passes to the util.
 # If the minor digit advanced, call it minor; patch digit, patch; etc. If base > branch, skip (not ours to land).
 # For simplicity: use "patch" as a conservative default; util handles collision-past regardless of input level.
-QUEUE_JSON=$(bun run bin/gstack-next-version \
+QUEUE_JSON=$(bun run ~/.claude/skills/gstuck/output/gstack/bin/gstack-next-version \
   --base "$BASE_BRANCH" \
   --bump patch \
   --current-version "$BASE_VERSION" 2>/dev/null || echo '{"offline":true}')
@@ -1339,13 +1344,25 @@ Record the start timestamp for timing data. Also record which merge path is take
 Try auto-merge first (respects repo merge settings and merge queues):
 
 ```bash
-gh pr merge --auto --delete-branch
+gh pr merge --squash --auto --delete-branch
 ```
 
 If `--auto` succeeds: record `MERGE_PATH=auto`. This means the repo has auto-merge enabled
 and may use merge queues.
 
-If `--auto` is not available (repo doesn't have auto-merge enabled), merge directly:
+`--auto` fails for two unrelated reasons. Both fall through to the direct merge below, so
+the flow is unaffected — but do not report the second one as "auto-merge is disabled":
+
+1. **Auto-merge is disabled for the repo** — `Auto-merge is not allowed for this repository`.
+2. **The PR is not waiting on anything.** `--auto` only *queues* a merge behind pending
+   required checks. When every required check has already settled — or the repo declares
+   no required status checks at all — GitHub treats the PR as immediately mergeable and
+   rejects the mutation:
+   `Pull request is in clean status` (everything green) or
+   `Pull request is in unstable status` (something red, but nothing required).
+   A repo with zero required status checks therefore takes the direct path 100% of the
+   time no matter how auto-merge is configured, and so does any repo whose CI finishes
+   before this step runs.
 
 ```bash
 gh pr merge --squash --delete-branch
@@ -1371,6 +1388,18 @@ Capture merge SHA:
 ```bash
 gh pr view --json mergeCommit -q .mergeCommit.oid
 ```
+
+Squash/rebase merge readback guard:
+- Do **not** prove success by requiring the PR head SHA to be an ancestor of the base branch. GitHub squash and rebase merges deliberately create a new commit, so `git merge-base --is-ancestor <head_sha> origin/<base>` can fail even when the PR is merged.
+- Once GitHub reports `state == "MERGED"` with a non-null `mergeCommit.oid`, treat that as authoritative. Record the merge SHA and continue.
+- If local cleanup or readback is needed, fetch the base branch and compare/sync against the merge commit, not the old PR branch commit:
+```bash
+BASE=$(gh pr view --json baseRefName -q .baseRefName)
+MERGE_SHA=$(gh pr view --json mergeCommit -q .mergeCommit.oid)
+git fetch origin "$BASE"
+git diff --quiet "$MERGE_SHA" origin/"$BASE" || git log --oneline --decorate -1 "$MERGE_SHA" origin/"$BASE"
+```
+- If the worktree is clean and only needs to stop looking diverged after a squash merge, prefer a named local branch at the merge commit, for example `git switch -c "codex/post-merge-pr-$PR_NUMBER" "$MERGE_SHA"`. Avoid detached HEAD in Codex Desktop worktrees because git action workers often expect `git symbolic-ref --short HEAD` to return a branch. Do not force-push or reset a user's branch unless they explicitly ask.
 
 Worktree cleanup — non-destructive, candidate-based:
 ```bash
@@ -1454,8 +1483,11 @@ echo "$DEPLOY_CONFIG"
 
 # If config exists, parse it
 if [ "$DEPLOY_CONFIG" != "NO_CONFIG" ]; then
-  PROD_URL=$(echo "$DEPLOY_CONFIG" | grep -i "production.*url" | head -1 | sed 's/.*: *//')
-  PLATFORM=$(echo "$DEPLOY_CONFIG" | grep -i "platform" | head -1 | sed 's/.*: *//')
+  # Cut at the FIRST ": ", not the last. A greedy 's/.*: *//' ate the scheme of
+  # any URL: "Production URL: https://x.com" became "//x.com", because the last
+  # ":" belongs to "https:".
+  PROD_URL=$(echo "$DEPLOY_CONFIG" | grep -i "production.*url" | head -1 | sed 's/^[^:]*: *//')
+  PLATFORM=$(echo "$DEPLOY_CONFIG" | grep -i "platform" | head -1 | sed 's/^[^:]*: *//')
   echo "PERSISTED_PLATFORM:$PLATFORM"
   echo "PERSISTED_URL:$PROD_URL"
 fi

@@ -49,6 +49,7 @@ import { isProcessAlive } from './error-handling';
 import { sanitizeBody, stripLoneSurrogateEscapes } from './sanitize';
 import { startSocksBridge, testUpstream, type BridgeHandle } from './socks-bridge';
 import { parseProxyConfig, toUpstreamConfig, ProxyConfigError } from './proxy-config';
+import { writeReceipt } from '../../lib/egress-receipt';
 import { redactProxyUrl } from './proxy-redact';
 import { shouldSpawnXvfb, pickFreeDisplay, spawnXvfb, xvfbInstallHint, type XvfbHandle } from './xvfb';
 import { logTunnelDenial } from './tunnel-denial-log';
@@ -304,6 +305,17 @@ const TUNNEL_PATHS = new Set<string>([
   '/command',
   '/sidebar-chat',
 ]);
+
+/**
+ * The gstack sidebar extension's pinned Chrome extension ID. Derived from
+ * the "key" field in extension/manifest.json (first 16 bytes of SHA-256 of
+ * the DER public key, hex nibbles mapped 0-9a-f → a-p). Reproduce with:
+ *   bun browse/scripts/extension-id.ts
+ * POST /extension-token releases AUTH_TOKEN only to an Origin of exactly
+ * `chrome-extension://<this id>`. If the manifest keypair is ever rotated,
+ * this constant must be updated in the same commit.
+ */
+export const GSTACK_EXTENSION_ID = 'dgbkdbjebeiblbajiilljmhjdpmiglep';
 
 /**
  * Commands reachable via POST /command over the tunnel surface. A paired
@@ -1517,8 +1529,18 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
     process.env.GSTACK_AGENT_WATCHDOG_TICK_MS || '60000',
     10,
   );
-  const RESPAWN_GUARD_WINDOW_MS = 60_000;
   const RESPAWN_GUARD_MAX = 3;
+  // The guard window MUST span enough ticks for RESPAWN_GUARD_MAX respawns to
+  // land inside it. This was a fixed 60_000 against a 60_000 tick, so at most
+  // ONE respawn could ever be in the window and `respawnHistory.length >= 3`
+  // was unreachable — the guard could not fire at the default tick rate, and a
+  // steady one-per-tick leak ran unbounded instead of stopping after 3. Scale
+  // with the tick so the intent ("3 crashes in quick succession → stop") holds
+  // at any tick value: 3 respawns within 5 ticks trips it.
+  const RESPAWN_GUARD_WINDOW_MS = Math.max(
+    60_000,
+    AGENT_WATCHDOG_TICK_MS * (RESPAWN_GUARD_MAX + 2),
+  );
   let agentRespawnGuardTripped = false;
 
   if (ownsTerminalAgent) {
@@ -1551,6 +1573,7 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
         const pid = spawnTerminalAgent({
           stateFile: cfg.config.stateFile,
           serverPort: cfg.browsePort,
+          ownerPid: process.pid,
           cwd: cfg.config.projectDir,
         });
         if (pid) {
@@ -1769,7 +1792,51 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
         );
       }
 
-      // Health check — no auth required, does NOT reset idle timer
+      // ─── POST /extension-token — pinned-origin token bootstrap ──────
+      //
+      // The ONLY endpoint that hands out AUTH_TOKEN. GET /health used to
+      // carry the token (headed mode + any chrome-extension:// Origin),
+      // which meant ANY extension — or any localhost caller in headed
+      // mode — could read the root token. Now the token is released only
+      // to the one extension identity we ship: the Origin header must be
+      // exactly `chrome-extension://<GSTACK_EXTENSION_ID>`, where the ID
+      // is pinned by the "key" field in extension/manifest.json (derive
+      // it with `bun browse/scripts/extension-id.ts`). Chrome sets Origin
+      // on cross-origin POSTs from extension contexts and web pages
+      // cannot forge a chrome-extension:// Origin.
+      //
+      // Local listener only: NEVER added to TUNNEL_PATHS, so the tunnel
+      // surface 404s it by default-deny.
+      if (url.pathname === '/extension-token' && req.method === 'POST') {
+        // Defense-in-depth alongside the 127.0.0.1 bind: a DNS-rebinding
+        // page can't present a localhost Host header. Host arrives as
+        // '127.0.0.1:34567', so parse out the hostname — never compare
+        // the raw header (which carries the port) against a literal.
+        let hostname: string | null = null;
+        try {
+          hostname = new URL(`http://${req.headers.get('host') ?? ''}`).hostname;
+        } catch (err) {
+          if (!(err instanceof TypeError)) throw err;  // TypeError = malformed Host
+        }
+        const originOk =
+          req.headers.get('origin') === `chrome-extension://${GSTACK_EXTENSION_ID}`;
+        const hostOk = hostname === '127.0.0.1' || hostname === 'localhost';
+        if (!originOk || !hostOk) {
+          // No detail in the body — don't teach a probing caller which
+          // check failed.
+          return new Response(JSON.stringify({ error: 'Forbidden' }), {
+            status: 403, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ token: authToken }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Health check — no auth required, does NOT reset idle timer.
+      // NEVER carries a token in any mode: token bootstrap is
+      // POST /extension-token (pinned extension Origin) and shell auth
+      // is POST /pty-session. Liveness/status only.
       if (url.pathname === '/health') {
         const healthy = await browserManager.isHealthy();
         return new Response(JSON.stringify({
@@ -1777,14 +1844,6 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
           mode: browserManager.getConnectionMode(),
           uptime: Math.floor((Date.now() - startTime) / 1000),
           tabs: browserManager.getTabCount(),
-          // Auth token for extension bootstrap. Safe: /health is localhost-only.
-          // Previously served unconditionally, but that leaks the token if the
-          // server is tunneled to the internet (ngrok, SSH tunnel).
-          // In headed mode the server is always local, so return token unconditionally
-          // (fixes Playwright Chromium extensions that don't send Origin header).
-          ...(browserManager.getConnectionMode() === 'headed' ||
-              req.headers.get('origin')?.startsWith('chrome-extension://')
-              ? { token: authToken } : {}),
           // The chat queue is gone — Terminal pane is the sole sidebar
           // surface. Keep `chatEnabled: false` so any older extension
           // build still treats the chat input as disabled.
@@ -2309,7 +2368,7 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
       // Dual-listener model: binds a SECOND Bun.serve listener on an
       // ephemeral 127.0.0.1 port dedicated to tunnel traffic, then points
       // ngrok.forward() at THAT port.  The existing local listener (which
-      // serves /health+token, /cookie-picker, /inspector/*, welcome, etc.)
+      // serves /extension-token, /cookie-picker, /inspector/*, welcome, etc.)
       // is never exposed to ngrok.
       //
       // Hard fail if the tunnel listener bind fails — NEVER fall back to
@@ -2374,6 +2433,19 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
           const domain = process.env.NGROK_DOMAIN;
           const forwardOpts: any = { addr: tunnelPort, authtoken };
           if (domain) forwardOpts.domain = domain;
+
+          // Egress receipt BEFORE the tunnel session opens, fail-closed: a
+          // writeReceipt failure lands in this catch, which tears the tunnel
+          // listener back down and refuses the start. One receipt per session
+          // open; browse command behavior over the tunnel is unchanged.
+          writeReceipt({
+            sink: 'browse-tunnel',
+            host: domain || 'connect.ngrok-agent.com',
+            payloadClass: 'tunnel-session-open (scoped-token browser-command surface)',
+            bytes: 0,
+            sha256: null,
+            consent: 'pair_agent=on',
+          });
 
           tunnelListener = await ngrok.forward(forwardOpts);
           tunnelUrl = tunnelListener.url();
@@ -2794,11 +2866,10 @@ export function buildFetchHandler(cfg: ServerConfig): ServerHandle {
 
       // GET /memory — diagnostic snapshot (auth required, does NOT reset idle).
       // Same auth model as /activity/stream and /inspector/events: Bearer header
-      // OR view-only SSE-session cookie. Does NOT extend /health (which already
-      // leaks AUTH_TOKEN to any localhost caller in headed mode — see TODOS.md
-      // "Audit /health token distribution"); a separate endpoint with the
-      // standard SSE auth keeps the future /health fix from cascading into the
-      // sidebar footer poll.
+      // OR view-only SSE-session cookie. Does NOT extend /health (which is
+      // unauthenticated liveness-only — token bootstrap moved to the pinned
+      // POST /extension-token); a separate endpoint with the standard SSE auth
+      // keeps /health free of anything worth stealing.
       if (url.pathname === '/memory' && req.method === 'GET') {
         const cookieToken = extractSseCookie(req);
         if (!validateAuth(req) && !validateSseSessionToken(cookieToken)) {
@@ -3083,6 +3154,18 @@ export async function start() {
         const domain = process.env.NGROK_DOMAIN;
         const forwardOpts: any = { addr: tunnelPort, authtoken };
         if (domain) forwardOpts.domain = domain;
+
+        // Egress receipt BEFORE the tunnel session opens, fail-closed: a
+        // writeReceipt failure lands in this catch, which cleans up the
+        // listener and skips the tunnel (same as any other startup failure).
+        writeReceipt({
+          sink: 'browse-tunnel',
+          host: domain || 'connect.ngrok-agent.com',
+          payloadClass: 'tunnel-session-open (scoped-token browser-command surface)',
+          bytes: 0,
+          sha256: null,
+          consent: 'pair_agent=on (BROWSE_TUNNEL=1)',
+        });
 
         tunnelListener = await ngrok.forward(forwardOpts);
         tunnelUrl = tunnelListener.url();

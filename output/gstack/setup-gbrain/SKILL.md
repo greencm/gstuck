@@ -68,6 +68,8 @@ if [ "$_EXPLAIN_LEVEL" != "default" ] && [ "$_EXPLAIN_LEVEL" != "terse" ]; then 
 echo "EXPLAIN_LEVEL: $_EXPLAIN_LEVEL"
 _QUESTION_TUNING=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get question_tuning 2>/dev/null || echo "false")
 echo "QUESTION_TUNING: $_QUESTION_TUNING"
+_UPDATE_CHECK=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get update_check 2>/dev/null || echo "true")
+echo "UPDATE_CHECK: $_UPDATE_CHECK"
   fi
 eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
 _LEARN_FILE="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}/learnings.jsonl"
@@ -367,8 +369,8 @@ if [ -f "$HOME/.gstack-artifacts-remote.txt" ]; then
 else
   _BRAIN_REMOTE_FILE="$HOME/.gstack-brain-remote.txt"
 fi
-_BRAIN_SYNC_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
-_BRAIN_CONFIG_BIN="~/.claude/skills/gstuck/output/gstack/bin/gstack-config"
+_BRAIN_SYNC_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync"
+_BRAIN_CONFIG_BIN="$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-config"
 
 # /sync-gbrain context-load: teach the agent to use gbrain when it's available.
 # Per-worktree pin: post-spike redesign uses kubectl-style `.gbrain-source` in the
@@ -477,8 +479,8 @@ If A/B and `~/.gstack/.git` is missing, ask whether to run `gstack-artifacts-ini
 At skill END before telemetry:
 
 ```bash
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
-"~/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --discover-new 2>/dev/null || true
+"$HOME/.claude/skills/gstuck/output/gstack/bin/gstack-brain-sync" --once 2>/dev/null || true
 ```
 
 
@@ -756,16 +758,22 @@ mv "$HOME/.gbrain/config.json" "$BACKUP"
 # gstack default: voyage-code-3 (1024d) when VOYAGE_API_KEY is set — best for
 # code retrieval. Without the key, fall back to gbrain's own auto-selected
 # embedding provider chain (OpenAI 1536d when OPENAI_API_KEY is present, etc.).
-GBRAIN_EMBED_FLAGS=""
 if [ -n "${VOYAGE_API_KEY:-}" ]; then
-  GBRAIN_EMBED_FLAGS="--embedding-model voyage:voyage-code-3 --embedding-dimensions 1024"
-fi
-if ! gbrain init --pglite --json $GBRAIN_EMBED_FLAGS; then
-  # Restore on failure
-  mv "$BACKUP" "$HOME/.gbrain/config.json"
-  echo "gbrain init failed. Your previous config was restored at $HOME/.gbrain/config.json." >&2
-  echo "PGLite directory at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` if needed before retrying." >&2
-  exit 1
+  if ! gbrain init --pglite --json --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024; then
+    # Restore on failure
+    mv "$BACKUP" "$HOME/.gbrain/config.json"
+    echo "gbrain init failed. Your previous config was restored at $HOME/.gbrain/config.json." >&2
+    echo "PGLite directory at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` if needed before retrying." >&2
+    exit 1
+  fi
+else
+  if ! gbrain init --pglite --json; then
+    # Restore on failure
+    mv "$BACKUP" "$HOME/.gbrain/config.json"
+    echo "gbrain init failed. Your previous config was restored at $HOME/.gbrain/config.json." >&2
+    echo "PGLite directory at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` if needed before retrying." >&2
+    exit 1
+  fi
 fi
 echo "Switched to local PGLite. Previous config saved at $BACKUP — review before deleting."
 ```
@@ -970,11 +978,11 @@ Then follow the same secret-read + verify + init flow as Path 1.
 # gstack default: voyage-code-3 (1024d) when VOYAGE_API_KEY is set — code
 # retrieval beats general-purpose embeddings on real code queries (validated
 # A/B). Without the key, gbrain auto-selects (OpenAI 1536d when available).
-GBRAIN_EMBED_FLAGS=""
 if [ -n "${VOYAGE_API_KEY:-}" ]; then
-  GBRAIN_EMBED_FLAGS="--embedding-model voyage:voyage-code-3 --embedding-dimensions 1024"
+  gbrain init --pglite --json --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024
+else
+  gbrain init --pglite --json
 fi
-gbrain init --pglite --json $GBRAIN_EMBED_FLAGS
 ```
 
 Done. No network, no secrets (beyond Voyage embedding API calls during sync, if
@@ -1062,14 +1070,18 @@ fi
 # VOYAGE_API_KEY is set. It wins the A/B over voyage-4-large and OpenAI
 # text-embedding-3-large on this codebase's symbol queries. Falls back to
 # gbrain's auto-selected provider when the key isn't present.
-GBRAIN_EMBED_FLAGS=""
 if [ -n "${VOYAGE_API_KEY:-}" ]; then
-  GBRAIN_EMBED_FLAGS="--embedding-model voyage:voyage-code-3 --embedding-dimensions 1024"
-fi
-if ! gbrain init --pglite --json $GBRAIN_EMBED_FLAGS; then
-  if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$HOME/.gbrain/config.json"; fi
-  echo "gbrain init failed. Existing config (if any) was restored. PGLite at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` to reset." >&2
-  echo "Continuing setup without local code search; you can re-run /setup-gbrain to retry." >&2
+  if ! gbrain init --pglite --json --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024; then
+    if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$HOME/.gbrain/config.json"; fi
+    echo "gbrain init failed. Existing config (if any) was restored. PGLite at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` to reset." >&2
+    echo "Continuing setup without local code search; you can re-run /setup-gbrain to retry." >&2
+  fi
+else
+  if ! gbrain init --pglite --json; then
+    if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$HOME/.gbrain/config.json"; fi
+    echo "gbrain init failed. Existing config (if any) was restored. PGLite at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` to reset." >&2
+    echo "Continuing setup without local code search; you can re-run /setup-gbrain to retry." >&2
+  fi
 fi
 ```
 
