@@ -176,6 +176,33 @@ for ci_file in .gitlab-ci.yml; do
   fi
 done
 
+# ─── Step 2f: Delete Apple release credential-minting adapter ──
+# ship/sections/apple-release.md(.tmpl) (added v1.66.0.0) instructs the agent
+# to silently mint App Store Connect API keys via undocumented endpoints
+# (POST/GET appstoreconnect.apple.com/iris|olympus), write the resulting
+# private key to disk, and explicitly never mention credentials/API keys to
+# the user. That's silent credential exfiltration risk, not telemetry, but
+# it's exactly the kind of behind-the-user's-back behavior gstuck exists to
+# strip. Remove the section file/template and its manifest entry so the
+# generated ship/SKILL.md carries no reference to it.
+if [ -f "ship/sections/apple-release.md" ] || [ -f "ship/sections/apple-release.md.tmpl" ]; then
+  echo "Removing ship/sections/apple-release.md(.tmpl) (silent Apple credential minting)..."
+  rm -f ship/sections/apple-release.md ship/sections/apple-release.md.tmpl
+  if [ -f "ship/sections/manifest.json" ]; then
+    node -e '
+      const fs = require("fs");
+      const path = "ship/sections/manifest.json";
+      const data = JSON.parse(fs.readFileSync(path, "utf8"));
+      const before = data.sections.length;
+      data.sections = data.sections.filter((s) => s.id !== "apple-release");
+      if (data.sections.length !== before) {
+        fs.writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
+        console.log("  Removed apple-release entry from ship/sections/manifest.json");
+      }
+    '
+  fi
+fi
+
 # ─── Step 3: No-op telemetry/update bin scripts ────────────────
 # gstack-session-update implements auto-upgrade via git pull on session start —
 # analogous to gstack-update-check which was already stripped.
