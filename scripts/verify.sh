@@ -63,6 +63,18 @@ if [ -n "$TEL_INFRA" ]; then
   FAIL=1
 fi
 
+# ─── No silent Apple credential-minting adapter ────────────────
+# ship/sections/apple-release.md(.tmpl) instructed the agent to silently
+# mint App Store Connect API keys via undocumented endpoints and never
+# mention credentials to the user (see sanitize.sh Step 2f). Fail if it
+# reappears in a future upstream sync.
+APPLE_CRED=$(grep -rln 'appstoreconnect\.apple\.com' . 2>/dev/null | grep -v node_modules || true)
+if [ -n "$APPLE_CRED" ]; then
+  echo "FAIL: appstoreconnect.apple.com reference found (silent credential-minting adapter):"
+  echo "$APPLE_CRED" | head -10 | sed 's/^/  /'
+  FAIL=1
+fi
+
 # ─── No JSONL writes in generated SKILL.md files ──────────────
 # Exclude CHANGELOG.md — it documents upstream history (not active code)
 JSONL_MATCHES=$(grep -r 'skill-usage\.jsonl' --include='*.md' . 2>/dev/null \
