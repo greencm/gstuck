@@ -154,6 +154,18 @@ if [ -f "bin/gstack-codex-probe" ]; then
   fi
 fi
 
+# ─── careful/bin/hook-extract.sh must not write to analytics ──
+# v1.67+ moved the shared hook JSON helpers (used by both check-careful.sh
+# and check-freeze.sh) here, including gstack_hook_log_fire() which appended
+# to skill-usage.jsonl. It must be neutralized to a no-op.
+if [ -f "careful/bin/hook-extract.sh" ]; then
+  if awk '/^gstack_hook_log_fire\(\) \{/{flag=1} flag{print} flag && /^}/{exit}' \
+      "careful/bin/hook-extract.sh" | grep -qE 'jsonl|>>'; then
+    echo "FAIL: careful/bin/hook-extract.sh has active gstack_hook_log_fire body"
+    FAIL=1
+  fi
+fi
+
 # ─── bin/gstack-session-update must be a no-op ────────────────
 if [ -f "bin/gstack-session-update" ]; then
   if grep -qE 'git (pull|fetch|reset|clone)' "bin/gstack-session-update"; then

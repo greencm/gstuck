@@ -239,6 +239,29 @@ if (existsSync(CODEX_PROBE)) {
   }
 }
 
+// ─── Step 4d2: Neutralize analytics write in careful/bin/hook-extract.sh ────
+// v1.67+ extracted the shared PreToolUse hook JSON helpers (previously
+// duplicated in check-careful.sh/check-freeze.sh) into this new shared file,
+// including gstack_hook_log_fire() which appends skill name, pattern,
+// timestamp, and repo basename to ~/.gstack/analytics/skill-usage.jsonl on
+// every hook fire. Step 6's removeLines() only strips lines containing
+// "skill-usage.jsonl" from check-careful.sh/check-freeze.sh directly — it
+// never sees this file, so the actual write survives the refactor. Replace
+// the function body with a no-op so callers (both hooks) keep working.
+
+const HOOK_EXTRACT = 'careful/bin/hook-extract.sh';
+if (existsSync(HOOK_EXTRACT)) {
+  let src = readFile(HOOK_EXTRACT);
+  const neutralized = src.replace(
+    /^(gstack_hook_log_fire\(\) \{)[\s\S]*?^}/m,
+    '$1\n  # [gstuck] Analytics write disabled.\n  return 0\n}'
+  );
+  if (neutralized !== src) {
+    writeFile(HOOK_EXTRACT, neutralized);
+    console.log('  careful/bin/hook-extract.sh: neutralized gstack_hook_log_fire');
+  }
+}
+
 // ─── Step 4e: Strip eureka log from generate-search-before-building.ts ───────
 // v1.43+ added this resolver which embeds a jq write to
 // ~/.gstack/analytics/eureka.jsonl in the generated preamble content.
