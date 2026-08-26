@@ -21,6 +21,7 @@ import {
   shannonEntropy,
   isPublicIPv4,
   isPlaceholderSpan,
+  URL_PASSWORD_PLACEHOLDER_WORDS,
 } from "../lib/redact-patterns";
 
 function ids(text: string, vis: RepoVisibility = "private"): string[] {
@@ -104,6 +105,58 @@ describe("HIGH credential patterns", () => {
   test("db.url_with_password flags real password, skips placeholder/env-var", () => {
     expect(ids("postgres://user:s3cretP@ss@db.example.com/app")).toContain("db.url_with_password");
     expect(ids("postgres://user:${DB_PASSWORD}@host/app")).not.toContain("db.url_with_password");
+    // Literal PASSWORD placeholder (URL-format doc comments).
+    expect(ids("postgresql://USER:PASSWORD@host/db")).not.toContain("db.url_with_password");
+    // JS template interpolations are code, not credentials — the
+    // uppercase-only placeholder form blocked a push over
+    // `postgresql://${dbUser}:${dbPass}@...` in a bash->TS port.
+    // eslint-disable-next-line no-template-curly-in-string
+    expect(ids("postgresql://${dbUser}:${dbPass}@${dbHost}:5432/db")).not.toContain("db.url_with_password");
+    // Assembled at runtime so this file's own diff never contains a
+    // credential-shaped literal (the prepush guard scans exact pushed bytes).
+    expect(ids("postgres://admin:" + "hun" + "ter2@db.internal/app")).toContain("db.url_with_password");
+    // Bare $UPPER_SNAKE is shell convention → suppressed; bare $lowercase is
+    // NOT an interpolation form — a real password starting with `$` must
+    // still block (both-braces-optional would have let it through).
+    expect(ids("postgres://user:$DB_PASSWORD@host/app")).not.toContain("db.url_with_password");
+    expect(ids("postgres://admin:$" + "hun" + "ter2@db.internal/app")).toContain("db.url_with_password");
+    // Mismatched brace is not an interpolation either (assembled at runtime
+    // so this file's own pushed bytes carry no blockable URL shape).
+    expect(ids("postgres://admin:${" + "dbPass@db.internal/app")).toContain("db.url_with_password");
+    // A fully-braced interpolation is code whatever it contains — the DSN
+    // builder's `${encodeURIComponent(dbPass)}` call site must not scan as a
+    // pushed secret.
+    expect(ids("postgresql://user:${encodeURIComponent(dbPass)}@host:5432/db")).not.toContain("db.url_with_password");
+    // A LOWERCASE literal 'password'/'pass' at the URL-password position is a
+    // real (terrible) credential, not a doc placeholder — only the ALL-CAPS
+    // doc convention (USER:PASSWORD) is suppressed. Assembled at runtime so
+    // this file's own bytes never carry a live credential shape.
+    expect(ids("postgres://admin:" + "pass" + "word@10.0.0.5/app")).toContain("db.url_with_password");
+    expect(ids("https://root:" + "pa" + "ss@127.0.0.1/")).toContain("creds.basic_auth_url");
+    // Structural placeholders still suppress at the URL position.
+    expect(ids("postgres://user:<your-password>@host/db")).not.toContain("db.url_with_password");
+    // An ALL-CAPS password that is NOT an exact placeholder token is a real
+    // secret and must block — the pre-fix shape rule (/^[A-Z][A-Z0-9_]*$/) waved
+    // every all-caps password through. Substring of a placeholder word (SECRET)
+    // must not rescue it. Assembled at runtime so this file's own pushed bytes
+    // carry no live DSN shape.
+    expect(ids("postgres://admin:" + "PROD2026" + "SECRET@db-prod.internal/app")).toContain("db.url_with_password");
+    expect(ids("postgres://admin:" + "ADMIN" + "123@host/db")).toContain("db.url_with_password");
+  });
+
+  // Every curated placeholder word must suppress at the URL-password position.
+  // The fix replaced a shape rule with a hand-curated EXACT set, so a typo or a
+  // dropped entry (CHANGEME -> CHANGME) would silently start blocking a legit
+  // doc placeholder with zero failure elsewhere. Loop the real exported set so
+  // the test can't drift from the source list.
+  test("db.url_with_password suppresses every curated placeholder word", () => {
+    for (const word of URL_PASSWORD_PLACEHOLDER_WORDS) {
+      expect(ids(`postgres://user:${word}@host/db`)).not.toContain("db.url_with_password");
+    }
+    // Guard the set stays a non-trivial curated list (catches an accidental clear).
+    expect(URL_PASSWORD_PLACEHOLDER_WORDS.size).toBeGreaterThanOrEqual(8);
+    // And a real secret that merely CONTAINS a placeholder word still blocks.
+    expect(ids("postgres://user:" + "MY" + "SECRETPASS@host/db")).toContain("db.url_with_password");
   });
 
   test("all HIGH patterns block (exit 3)", () => {
@@ -134,6 +187,52 @@ describe("MEDIUM demoted credential-shaped patterns (TENSION-1)", () => {
     expect(ids("API_TOKEN=8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ")).toContain("env.kv");
     expect(ids("API_KEY=changeme")).not.toContain("env.kv");
     expect(ids("API_KEY=${MY_VAR}")).not.toContain("env.kv");
+  });
+
+  // #1946 gap 3: the uppercase-`=`-only shape made lowercase and YAML/JSON
+  // colon assignments invisible — the exact config shapes people actually
+  // push. Each closed detection fail-open gets a pinned case.
+  test("env.kv fires on lowercase = assignment (#1946)", () => {
+    expect(ids("api_key=8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ")).toContain("env.kv");
+  });
+  test("env.kv fires on YAML colon assignment (#1946)", () => {
+    expect(ids("password: 8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ")).toContain("env.kv");
+  });
+  test("env.kv fires on quoted JSON key colon assignment (#1946)", () => {
+    expect(ids('"apiKey": "8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ"')).toContain("env.kv");
+  });
+  test("env.kv colon/lowercase forms stay entropy-gated and placeholder-safe", () => {
+    expect(ids("password: changeme")).not.toContain("env.kv");
+    expect(ids("apiKey: YOUR_API_KEY_HERE")).not.toContain("env.kv");
+    expect(ids("api_key=${MY_VAR}")).not.toContain("env.kv");
+  });
+  // T1 calibration: the zero-or-more-prefix net matched ANY identifier ending
+  // in a suffix, so ordinary code (`cacheKey: <entropic id>`) hit a MEDIUM
+  // confirm prompt. Name shape must be credential-semantic to count.
+  test("env.kv ignores non-credential names ending in a suffix (entropic values)", () => {
+    const v = "8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ";
+    expect(ids(`cacheKey: ${v}`)).not.toContain("env.kv");
+    expect(ids(`sortKey: ${v}`)).not.toContain("env.kv");
+    expect(ids(`partitionKey: ${v}`)).not.toContain("env.kv");
+    expect(ids(`hotkey: ${v}`)).not.toContain("env.kv");
+    expect(ids(`monkey: ${v}`)).not.toContain("env.kv");
+    expect(ids(`idempotencyKey: ${v}`)).not.toContain("env.kv");
+  });
+  test("env.kv still fires on every credential-shaped name form", () => {
+    const v = "8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ";
+    expect(ids(`api_key=${v}`)).toContain("env.kv"); // (i) separator
+    expect(ids(`API_KEY=${v}`)).toContain("env.kv"); // (i) + ALL-CAPS
+    expect(ids(`x-access-key: ${v}`)).toContain("env.kv"); // (i) dash separator
+    expect(ids(`key: ${v}`)).toContain("env.kv"); // (ii) bare suffix
+    expect(ids(`APIKEY=${v}`)).toContain("env.kv"); // (iii) ALL-CAPS compound
+    expect(ids(`apiKey: ${v}`)).toContain("env.kv"); // (iv) credential camel
+    expect(ids(`authToken: ${v}`)).toContain("env.kv"); // (iv) credential camel
+    expect(ids(`clientSecret: ${v}`)).toContain("env.kv"); // (iv) credential camel
+  });
+  test("env.kv stays MEDIUM (calibration: generic net, not a blocker)", () => {
+    const f = scan("api_key=8Fk2pQ9vXz4wL7mN3rT6yB1cD5eG0hJ", { repoVisibility: "private" })
+      .findings.find((x) => x.id === "env.kv");
+    expect(f?.tier).toBe("MEDIUM");
   });
 
   // #1946 — Bearer is the most FP-prone shape in the wave: docs and examples

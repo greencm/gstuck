@@ -1,8 +1,12 @@
 import type { TemplateContext } from '../types';
 
 export function generateContextRecovery(ctx: TemplateContext): string {
-  const binDir = ctx.host === 'codex' ? '$GSTACK_BIN' : ctx.paths.binDir;
+  const binDir = ctx.paths.binDir; // env-var hosts already resolve to $GSTACK_BIN via types.ts
 
+  // Branch-form discipline (#2550/#1851): FILE-PATH positions use $BRANCH —
+  // the canonical slug form the gstack-slug eval on the first line sets
+  // (tr '/' '-' then tr -cd 'a-zA-Z0-9._-', matching what gstack-review-log
+  // "branch" field — slugging the reader there would break matching.
   return `## Context Recovery
 
 At session start or after compaction, recover recent project context.
@@ -12,12 +16,12 @@ eval "$(${binDir}/gstack-slug 2>/dev/null)"
 _PROJ="\${GSTACK_HOME:-$HOME/.gstack}/projects/\${SLUG:-unknown}"
 if [ -d "$_PROJ" ]; then
   echo "--- RECENT ARTIFACTS ---"
-  find "$_PROJ/ceo-plans" "$_PROJ/checkpoints" -type f -name "*.md" 2>/dev/null | xargs ls -t 2>/dev/null | head -3
-  [ -f "$_PROJ/\${_BRANCH}-reviews.jsonl" ] && echo "REVIEWS: $(wc -l < "$_PROJ/\${_BRANCH}-reviews.jsonl" | tr -d ' ') entries"
+  find "$_PROJ/ceo-plans" "$_PROJ/checkpoints" -type f -name "*.md" 2>/dev/null | xargs -r ls -t 2>/dev/null | head -3
+  [ -f "$_PROJ/\${BRANCH:-unknown}-reviews.jsonl" ] && echo "REVIEWS: $(wc -l < "$_PROJ/\${BRANCH:-unknown}-reviews.jsonl" | tr -d ' ') entries"
     [ -n "$_LAST" ] && echo "LAST_SESSION: $_LAST"
     [ -n "$_RECENT_SKILLS" ] && echo "RECENT_PATTERN: $_RECENT_SKILLS"
   fi
-  _LATEST_CP=$(find "$_PROJ/checkpoints" -name "*.md" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+  _LATEST_CP=$(find "$_PROJ/checkpoints" -name "*.md" -type f 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1)
   [ -n "$_LATEST_CP" ] && echo "LATEST_CHECKPOINT: $_LATEST_CP"
   if [ -f "$_PROJ/decisions.active.json" ]; then
     echo "--- ACTIVE DECISIONS (recent, scope-relevant) ---"

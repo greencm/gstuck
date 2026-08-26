@@ -1,11 +1,13 @@
-import { describe, test, expect, afterAll } from 'bun:test';
+import { describe, test, expect, afterAll, setDefaultTimeout } from 'bun:test';
 import * as path from 'path';
+
+// Every test here spawnSync's a `node` child; Windows CI cold-start (AV scan,
+// first-touch of node.exe) alone can blow bun's 5s default — observed 5,007ms
+// on a 50ms sleep test. Subprocess budget, not assertion looseness.
+setDefaultTimeout(20_000);
 
 // Load the polyfill into a fresh object (don't clobber globalThis.Bun)
 const polyfillPath = path.resolve(import.meta.dir, '../src/bun-polyfill.cjs');
-// Forward slashes so the path survives interpolation into a JS string literal
-// on Windows, which is the platform this polyfill exists for.
-const requirePath = polyfillPath.replace(/\\/g, '/');
 
 describe('bun-polyfill', () => {
   // We test the polyfill by requiring it in a subprocess under Node.js
@@ -13,7 +15,7 @@ describe('bun-polyfill', () => {
 
   test('Bun.sleep resolves after delay', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         const start = Date.now();
         await Bun.sleep(50);
@@ -27,7 +29,7 @@ describe('bun-polyfill', () => {
 
   test('Bun.spawnSync runs a command and returns stdout', () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       const r = Bun.spawnSync(['echo', 'hello'], { stdout: 'pipe' });
       console.log(r.stdout.toString().trim());
       console.log('exit:' + r.exitCode);
@@ -39,7 +41,7 @@ describe('bun-polyfill', () => {
 
   test('Bun.spawn launches a process with pid', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       const p = Bun.spawn(['echo', 'test'], { stdio: ['pipe', 'pipe', 'pipe'] });
       console.log(typeof p.pid === 'number' ? 'HAS_PID' : 'NO_PID');
       console.log(typeof p.kill === 'function' ? 'HAS_KILL' : 'NO_KILL');
@@ -57,7 +59,7 @@ describe('bun-polyfill', () => {
   // stdout before the child has produced it — surfacing as a silent failure.
   test('Bun.spawn exposes proc.exited that resolves to the exit code', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         const p = Bun.spawn(['node', '-e', 'process.exit(0)'], { stdio: ['ignore', 'ignore', 'ignore'] });
         console.log(typeof p.exited === 'object' && typeof p.exited.then === 'function' ? 'IS_PROMISE' : 'NOT_PROMISE');
@@ -71,7 +73,7 @@ describe('bun-polyfill', () => {
 
   test('Bun.spawn proc.exited reflects non-zero exit codes', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         const p = Bun.spawn(['node', '-e', 'process.exit(3)'], { stdio: ['ignore', 'ignore', 'ignore'] });
         console.log('exit:' + await p.exited);
@@ -82,7 +84,7 @@ describe('bun-polyfill', () => {
 
   test('Bun.spawn proc.exited resolves before reading stdout (no race)', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         // Real-world pattern: write to stdout, then exit. Awaiting proc.exited
         // before reading must guarantee the bytes are flushed.
@@ -102,7 +104,7 @@ describe('bun-polyfill', () => {
   // forever. The lifecycle promise must resolve on either event.
   test('Bun.spawn proc.exited resolves on spawn failure (missing binary)', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         const p = Bun.spawn(['this-binary-does-not-exist-zzz-' + Date.now()], {
           stdio: ['ignore', 'pipe', 'pipe']
@@ -121,6 +123,22 @@ describe('bun-polyfill', () => {
     expect(out).toMatch(/^exit:\d+$/);
   });
 
+  // Signal-exit branch: Bun reports 128 + signal number when a child is killed
+  // by a signal (code === null). Skipped on Windows, whose kill() semantics
+  // don't produce the POSIX 128+n mapping.
+  test.skipIf(process.platform === 'win32')('Bun.spawn proc.exited maps a killing signal to 128+signal', async () => {
+    const result = Bun.spawnSync(['node', '-e', `
+      require(${JSON.stringify(polyfillPath)});
+      (async () => {
+        const p = Bun.spawn(['node', '-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+        setTimeout(() => p.kill('SIGTERM'), 150);
+        console.log('exit:' + await p.exited);
+      })();
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    // SIGTERM = 15 → 128 + 15 = 143.
+    expect(result.stdout.toString().trim()).toBe('exit:143');
+  });
+
   // GSTACK_SPAWN_MAX_BUFFER caps the drain so a runaway child can't OOM the
   // server. Past the cap, the pipe keeps flowing (child doesn't block) but
   // further bytes are dropped. Set a small cap, write more than that, assert
@@ -128,7 +146,7 @@ describe('bun-polyfill', () => {
   test('Bun.spawn caps buffered output at GSTACK_SPAWN_MAX_BUFFER', async () => {
     const result = Bun.spawnSync(['node', '-e', `
       process.env.GSTACK_SPAWN_MAX_BUFFER = '${1024}';
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         // Child writes 10 KB; cap is 1 KB; drained output should be exactly 1 KB
         // and exit should still resolve cleanly (child not back-pressured to death).
@@ -154,7 +172,7 @@ describe('bun-polyfill', () => {
   // in <500ms. Bun's default per-test timeout is 5s — generous here.
   test('Bun.spawn drains large stdout so proc.exited still resolves', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       (async () => {
         const ONE_MB = 1024 * 1024;
         // Exit in the write callback, not straight after write(): on modern
@@ -178,52 +196,9 @@ describe('bun-polyfill', () => {
     expect(result.stdout.toString().trim()).toBe('1048576:0');
   }, 15000);
 
-  // windowsHide is the one option where Node's default is the opposite of
-  // Bun's: Node shows the child's console window, Bun hides it. Dropping it
-  // in translation makes every spawned child pop a window on Windows, which
-  // is the platform this whole file exists for. Both shims are covered.
-  test('Bun.spawn defaults windowsHide to true', () => {
-    const result = Bun.spawnSync(['node', '-e', `
-      const cp = require('child_process');
-      const orig = cp.spawn;
-      let seen;
-      cp.spawn = (c, a, o) => { seen = o; return orig(c, a, o); };
-      require('${requirePath}');
-      Bun.spawn(['node', '-e', ''], { stdio: ['ignore', 'ignore', 'ignore'] });
-      console.log('windowsHide:' + seen.windowsHide);
-    `], { stdout: 'pipe', stderr: 'pipe' });
-    expect(result.stdout.toString().trim()).toBe('windowsHide:true');
-  });
-
-  test('Bun.spawnSync defaults windowsHide to true', () => {
-    const result = Bun.spawnSync(['node', '-e', `
-      const cp = require('child_process');
-      const orig = cp.spawnSync;
-      let seen;
-      cp.spawnSync = (c, a, o) => { seen = o; return orig(c, a, o); };
-      require('${requirePath}');
-      Bun.spawnSync(['node', '-e', '']);
-      console.log('windowsHide:' + seen.windowsHide);
-    `], { stdout: 'pipe', stderr: 'pipe' });
-    expect(result.stdout.toString().trim()).toBe('windowsHide:true');
-  });
-
-  test('an explicit windowsHide:false is honored', () => {
-    const result = Bun.spawnSync(['node', '-e', `
-      const cp = require('child_process');
-      const orig = cp.spawn;
-      let seen;
-      cp.spawn = (c, a, o) => { seen = o; return orig(c, a, o); };
-      require('${requirePath}');
-      Bun.spawn(['node', '-e', ''], { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: false });
-      console.log('windowsHide:' + seen.windowsHide);
-    `], { stdout: 'pipe', stderr: 'pipe' });
-    expect(result.stdout.toString().trim()).toBe('windowsHide:false');
-  });
-
   test('Bun.serve creates an HTTP server that responds', async () => {
     const result = Bun.spawnSync(['node', '-e', `
-      require('${requirePath}');
+      require(${JSON.stringify(polyfillPath)});
       const server = Bun.serve({
         port: 0,  // Note: polyfill uses port directly, so we pick one
         hostname: '127.0.0.1',
@@ -241,5 +216,49 @@ describe('bun-polyfill', () => {
     const lines = result.stdout.toString().trim().split('\n');
     expect(lines[0]).toBe('HAS_STOP');
     expect(lines[1]).toBe('HAS_PORT');
+  });
+
+  // windowsHide is the one option where Node's default is the opposite of
+  // Bun's: Node shows the child's console window, Bun hides it. Dropping it
+  // in translation makes every spawned child pop a window on Windows, which
+  // is the platform this whole file exists for. Both shims are covered, and
+  // an explicit windowsHide:false must survive forwarding (#2523 + #2539).
+  test('Bun.spawn defaults windowsHide to true', () => {
+    const result = Bun.spawnSync(['node', '-e', `
+      const cp = require('child_process');
+      const orig = cp.spawn;
+      let seen;
+      cp.spawn = (c, a, o) => { seen = o; return orig(c, a, o); };
+      require(${JSON.stringify(polyfillPath)});
+      Bun.spawn(['node', '-e', ''], { stdio: ['ignore', 'ignore', 'ignore'] });
+      console.log('windowsHide:' + seen.windowsHide);
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    expect(result.stdout.toString().trim()).toBe('windowsHide:true');
+  });
+
+  test('Bun.spawnSync defaults windowsHide to true', () => {
+    const result = Bun.spawnSync(['node', '-e', `
+      const cp = require('child_process');
+      const orig = cp.spawnSync;
+      let seen;
+      cp.spawnSync = (c, a, o) => { seen = o; return orig(c, a, o); };
+      require(${JSON.stringify(polyfillPath)});
+      Bun.spawnSync(['node', '-e', '']);
+      console.log('windowsHide:' + seen.windowsHide);
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    expect(result.stdout.toString().trim()).toBe('windowsHide:true');
+  });
+
+  test('an explicit windowsHide:false is honored', () => {
+    const result = Bun.spawnSync(['node', '-e', `
+      const cp = require('child_process');
+      const orig = cp.spawn;
+      let seen;
+      cp.spawn = (c, a, o) => { seen = o; return orig(c, a, o); };
+      require(${JSON.stringify(polyfillPath)});
+      Bun.spawn(['node', '-e', ''], { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: false });
+      console.log('windowsHide:' + seen.windowsHide);
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    expect(result.stdout.toString().trim()).toBe('windowsHide:false');
   });
 });

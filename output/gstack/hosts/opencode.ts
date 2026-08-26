@@ -1,48 +1,19 @@
-import type { HostConfig } from '../scripts/host-config';
+import { defineHost } from './define-host';
 
-const opencode: HostConfig = {
+const opencode = defineHost({
   name: 'opencode',
   displayName: 'OpenCode',
-  cliCommand: 'opencode',
-  cliAliases: [],
 
-  globalRoot: '.config/opencode/skills/gstuck/output/gstack',
-  localSkillRoot: '.opencode/skills/gstuck/output/gstack',
-  hostSubdir: '.opencode',
-  usesEnvVars: true,
+  globalRoot: '.config/opencode/skills/gstuck/output/gstack',  // XDG config dir, not ~/.opencode
 
-  frontmatter: {
-    mode: 'allowlist',
-    keepFields: ['name', 'description'],
-    descriptionLimit: null,
-  },
-
-  generation: {
-    generateMetadata: false,
-    skipSkills: ['codex'],
-  },
-
-  pathRewrites: [
-    { from: '~/.claude/skills/gstuck/output/gstack', to: '~/.config/opencode/skills/gstuck/output/gstack' },
-    { from: '.claude/skills/gstuck/output/gstack', to: '.opencode/skills/gstuck/output/gstack' },
-    { from: '.claude/skills', to: '.opencode/skills' },
-  ],
-
-  suppressedResolvers: ['GBRAIN_CONTEXT_LOAD', 'GBRAIN_SAVE_RESULTS'],
-
+  // OpenCode links a wider runtime asset set than the shared default
+  // (design binary, review specialists, qa templates/references, DX hall of fame).
   runtimeRoot: {
     globalSymlinks: ['bin', 'browse/dist', 'browse/bin', 'design/dist', 'gstack-upgrade', 'ETHOS.md', 'review/specialists', 'qa/templates', 'qa/references', 'plan-devex-review/dx-hall-of-fame.md'],
     globalFiles: {
       'review': ['checklist.md', 'design-checklist.md', 'greptile-triage.md', 'TODOS-format.md'],
     },
   },
-
-  install: {
-    prefixable: false,
-    linkingStrategy: 'symlink-generated',
-  },
-
-  learningsMode: 'basic',
-};
+});
 
 export default opencode;

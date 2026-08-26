@@ -81,9 +81,11 @@ else
   echo "LEARNINGS: 0"
 fi
 _HAS_ROUTING="no"
-if [ -f CLAUDE.md ] && grep -q "## Skill routing" CLAUDE.md 2>/dev/null; then
-  _HAS_ROUTING="yes"
-fi
+for _RF in CLAUDE.md AGENTS.md; do
+  if [ -f "$_RF" ] && grep -q "## Skill routing" "$_RF" 2>/dev/null; then
+    _HAS_ROUTING="yes"
+  fi
+done
 _ROUTING_DECLINED=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get routing_declined 2>/dev/null || echo "false")
 echo "HAS_ROUTING: $_HAS_ROUTING"
 echo "ROUTING_DECLINED: $_ROUTING_DECLINED"
@@ -278,10 +280,13 @@ _BRAIN_SYNC_MODE=$("$_BRAIN_CONFIG_BIN" get artifacts_sync_mode 2>/dev/null || e
 # Detect remote-MCP mode (Path 4 of /setup-gbrain). Local artifacts sync is
 # a no-op in remote mode; the brain server pulls from GitHub/GitLab on its
 # own cadence. Read claude.json directly to keep this preamble fast (no
-# subprocess to claude CLI on every skill start).
+# subprocess to claude CLI on every skill start). Both registration scopes
+# are read (#2499): user scope, then the nearest-ancestor project scope.
 _GBRAIN_MCP_MODE="none"
+_GBRAIN_MCP_ENTRY=""
 if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
-  _GBRAIN_MCP_TYPE=$(jq -r '.mcpServers.gbrain.type // .mcpServers.gbrain.transport // empty' "$HOME/.claude.json" 2>/dev/null)
+  _GBRAIN_MCP_ENTRY=$(jq -c --arg cwd "$PWD" '.mcpServers.gbrain // ((.projects // {}) | to_entries | map(select((.key as $k | $cwd == $k or ($cwd | startswith($k + "/"))) and ((try .value.mcpServers.gbrain catch null) != null))) | sort_by(.key | length) | last | .value.mcpServers.gbrain) // empty' "$HOME/.claude.json" 2>/dev/null)
+  _GBRAIN_MCP_TYPE=$(printf '%s' "$_GBRAIN_MCP_ENTRY" | jq -r '.type // .transport // empty' 2>/dev/null)
   case "$_GBRAIN_MCP_TYPE" in
     url|http|sse) _GBRAIN_MCP_MODE="remote-http" ;;
     stdio) _GBRAIN_MCP_MODE="local-stdio" ;;
@@ -302,6 +307,7 @@ if [ -d "$_GSTACK_HOME/.git" ] && [ "$_BRAIN_SYNC_MODE" != "off" ]; then
   _BRAIN_DO_PULL=1
   if [ -f "$_BRAIN_LAST_PULL_FILE" ]; then
     _BRAIN_LAST=$(cat "$_BRAIN_LAST_PULL_FILE" 2>/dev/null || echo 0)
+    case "$_BRAIN_LAST" in ''|*[!0-9]*) _BRAIN_LAST=0 ;; esac
     _BRAIN_AGE=$(( _BRAIN_NOW - _BRAIN_LAST ))
     [ "$_BRAIN_AGE" -lt 86400 ] && _BRAIN_DO_PULL=0
   fi
@@ -315,7 +321,7 @@ fi
 if [ "$_GBRAIN_MCP_MODE" = "remote-http" ]; then
   # Remote-MCP mode: local artifacts sync is a no-op (brain admin's server
   # pulls from GitHub/GitLab). Show the user this is by design, not broken.
-  _GBRAIN_HOST=$(jq -r '.mcpServers.gbrain.url // empty' "$HOME/.claude.json" 2>/dev/null | sed -E 's|^https?://([^/:]+).*|\1|')
+  _GBRAIN_HOST=$(printf '%s' "${_GBRAIN_MCP_ENTRY:-}" | jq -r '.url // empty' 2>/dev/null | sed -E 's|^https?://([^/:]+).*|\1|' | head -1 | tr -cd 'A-Za-z0-9._-')
   echo "ARTIFACTS_SYNC: remote-mode (managed by brain server ${_GBRAIN_HOST:-remote})"
 elif [ -d "$_GSTACK_HOME/.git" ] && [ "$_BRAIN_SYNC_MODE" != "off" ]; then
   _BRAIN_QUEUE_DEPTH=0
@@ -484,6 +490,18 @@ $B screenshot /tmp/bug.png                # plain screenshot
 $B console                                # error log
 ```
 
+Two behaviors that silently invalidate screenshots (#2445 — designed, but
+surprising):
+- **`hover` scrolls its target into view.** Hovering anything below the fold
+  scrolls the page first, so a "rest state" shot taken afterwards captures
+  the wrong section with exit 0. Before a rest-state screenshot, hover only
+  something already visible, and assert position when it matters:
+  `$B js "window.scrollY"` should be `0` (or your intended offset).
+- **The tab persists across sessions.** The daemon keeps its tab between your
+  sessions, so `reload` or `screenshot` without a preceding `goto` can act on
+  whatever page earlier work left open. Start verification passes with an
+  explicit `$B goto <url>`, never a bare `reload`.
+
 ### 5. Find all clickable elements (including non-ARIA)
 ```bash
 $B snapshot -C                   # finds divs with cursor:pointer, onclick, tabindex
@@ -634,6 +652,28 @@ should route through `browse` — `screenshot --selector` for visual output,
 `load-html` + `js --out` for bytes a function returns — instead of
 `npm i puppeteer` and downloading a second Chromium that drifts out of version sync.
 One install to pin, one daemon's lifecycle to manage.
+
+## Session Persistence (opt-in)
+
+By default the headless daemon's cookies and tab state die with it — a crash,
+version auto-restart, or `browse stop` logs you out of everything (#778).
+Opt in to persistence with `BROWSE_PERSIST_STATE=1` in the daemon's
+environment: the daemon then snapshots cookies + per-tab
+URL/localStorage/sessionStorage to `<stateDir>/session-state.json` (0600)
+every 30 seconds and at clean shutdown, and restores it on the next launch.
+
+Facts that matter:
+- **Default OFF.** Cookies on disk are a real cost; the user opts in.
+- **Headless only.** Headed mode's persistent Chromium profile already owns
+  its state; replaying tabs would clobber the user's window.
+- **Never persisted:** loaded HTML and tab ownership — a tampered state file
+  cannot smuggle content past load-html's checks or forge ownership. Cookies
+  for localhost, `.internal`, and cloud-metadata addresses are dropped on
+  restore.
+- **Corrupt state** is moved to `session-state.json.corrupt` (kept for
+  diagnosis) and the daemon boots fresh — persistence can never block a
+  launch. The boot log says which happened: `Session state restored: N
+  cookies / M tabs` or `fresh session`.
 
 ## User Handoff
 
