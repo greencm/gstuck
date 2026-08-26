@@ -83,9 +83,11 @@ else
   echo "LEARNINGS: 0"
 fi
 _HAS_ROUTING="no"
-if [ -f CLAUDE.md ] && grep -q "## Skill routing" CLAUDE.md 2>/dev/null; then
-  _HAS_ROUTING="yes"
-fi
+for _RF in CLAUDE.md AGENTS.md; do
+  if [ -f "$_RF" ] && grep -q "## Skill routing" "$_RF" 2>/dev/null; then
+    _HAS_ROUTING="yes"
+  fi
+done
 _ROUTING_DECLINED=$(~/.claude/skills/gstuck/output/gstack/bin/gstack-config get routing_declined 2>/dev/null || echo "false")
 echo "HAS_ROUTING: $_HAS_ROUTING"
 echo "ROUTING_DECLINED: $_ROUTING_DECLINED"
@@ -405,10 +407,13 @@ _BRAIN_SYNC_MODE=$("$_BRAIN_CONFIG_BIN" get artifacts_sync_mode 2>/dev/null || e
 # Detect remote-MCP mode (Path 4 of /setup-gbrain). Local artifacts sync is
 # a no-op in remote mode; the brain server pulls from GitHub/GitLab on its
 # own cadence. Read claude.json directly to keep this preamble fast (no
-# subprocess to claude CLI on every skill start).
+# subprocess to claude CLI on every skill start). Both registration scopes
+# are read (#2499): user scope, then the nearest-ancestor project scope.
 _GBRAIN_MCP_MODE="none"
+_GBRAIN_MCP_ENTRY=""
 if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
-  _GBRAIN_MCP_TYPE=$(jq -r '.mcpServers.gbrain.type // .mcpServers.gbrain.transport // empty' "$HOME/.claude.json" 2>/dev/null)
+  _GBRAIN_MCP_ENTRY=$(jq -c --arg cwd "$PWD" '.mcpServers.gbrain // ((.projects // {}) | to_entries | map(select((.key as $k | $cwd == $k or ($cwd | startswith($k + "/"))) and ((try .value.mcpServers.gbrain catch null) != null))) | sort_by(.key | length) | last | .value.mcpServers.gbrain) // empty' "$HOME/.claude.json" 2>/dev/null)
+  _GBRAIN_MCP_TYPE=$(printf '%s' "$_GBRAIN_MCP_ENTRY" | jq -r '.type // .transport // empty' 2>/dev/null)
   case "$_GBRAIN_MCP_TYPE" in
     url|http|sse) _GBRAIN_MCP_MODE="remote-http" ;;
     stdio) _GBRAIN_MCP_MODE="local-stdio" ;;
@@ -429,6 +434,7 @@ if [ -d "$_GSTACK_HOME/.git" ] && [ "$_BRAIN_SYNC_MODE" != "off" ]; then
   _BRAIN_DO_PULL=1
   if [ -f "$_BRAIN_LAST_PULL_FILE" ]; then
     _BRAIN_LAST=$(cat "$_BRAIN_LAST_PULL_FILE" 2>/dev/null || echo 0)
+    case "$_BRAIN_LAST" in ''|*[!0-9]*) _BRAIN_LAST=0 ;; esac
     _BRAIN_AGE=$(( _BRAIN_NOW - _BRAIN_LAST ))
     [ "$_BRAIN_AGE" -lt 86400 ] && _BRAIN_DO_PULL=0
   fi
@@ -442,7 +448,7 @@ fi
 if [ "$_GBRAIN_MCP_MODE" = "remote-http" ]; then
   # Remote-MCP mode: local artifacts sync is a no-op (brain admin's server
   # pulls from GitHub/GitLab). Show the user this is by design, not broken.
-  _GBRAIN_HOST=$(jq -r '.mcpServers.gbrain.url // empty' "$HOME/.claude.json" 2>/dev/null | sed -E 's|^https?://([^/:]+).*|\1|')
+  _GBRAIN_HOST=$(printf '%s' "${_GBRAIN_MCP_ENTRY:-}" | jq -r '.url // empty' 2>/dev/null | sed -E 's|^https?://([^/:]+).*|\1|' | head -1 | tr -cd 'A-Za-z0-9._-')
   echo "ARTIFACTS_SYNC: remote-mode (managed by brain server ${_GBRAIN_HOST:-remote})"
 elif [ -d "$_GSTACK_HOME/.git" ] && [ "$_BRAIN_SYNC_MODE" != "off" ]; then
   _BRAIN_QUEUE_DEPTH=0
@@ -527,12 +533,12 @@ eval "$(~/.claude/skills/gstuck/output/gstack/bin/gstack-slug 2>/dev/null)"
 _PROJ="${GSTACK_HOME:-$HOME/.gstack}/projects/${SLUG:-unknown}"
 if [ -d "$_PROJ" ]; then
   echo "--- RECENT ARTIFACTS ---"
-  find "$_PROJ/ceo-plans" "$_PROJ/checkpoints" -type f -name "*.md" 2>/dev/null | xargs ls -t 2>/dev/null | head -3
-  [ -f "$_PROJ/${_BRANCH}-reviews.jsonl" ] && echo "REVIEWS: $(wc -l < "$_PROJ/${_BRANCH}-reviews.jsonl" | tr -d ' ') entries"
+  find "$_PROJ/ceo-plans" "$_PROJ/checkpoints" -type f -name "*.md" 2>/dev/null | xargs -r ls -t 2>/dev/null | head -3
+  [ -f "$_PROJ/${BRANCH:-unknown}-reviews.jsonl" ] && echo "REVIEWS: $(wc -l < "$_PROJ/${BRANCH:-unknown}-reviews.jsonl" | tr -d ' ') entries"
     [ -n "$_LAST" ] && echo "LAST_SESSION: $_LAST"
     [ -n "$_RECENT_SKILLS" ] && echo "RECENT_PATTERN: $_RECENT_SKILLS"
   fi
-  _LATEST_CP=$(find "$_PROJ/checkpoints" -name "*.md" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+  _LATEST_CP=$(find "$_PROJ/checkpoints" -name "*.md" -type f 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1)
   [ -n "$_LATEST_CP" ] && echo "LATEST_CHECKPOINT: $_LATEST_CP"
   if [ -f "$_PROJ/decisions.active.json" ]; then
     echo "--- ACTIVE DECISIONS (recent, scope-relevant) ---"
@@ -571,6 +577,10 @@ When options differ in coverage, include `Completeness: X/10` (10 = all edge cas
 
 For high-stakes ambiguity (architecture, data model, destructive scope, missing context), STOP. Name it in one sentence, present 2-3 options with tradeoffs, and ask. Do not use for routine coding or obvious changes.
 
+## Claimed Limitations Need Evidence
+
+A claimed limitation or requirement ("the API can't do this", "X requires a credential", "that's impossible on this platform") is a material claim. State one only with the verbatim error, the documented statement, or a live probe in hand — pattern-matching a failure to a familiar story is not evidence. When a cheap probe settles the question, run it BEFORE asking the user anything or declaring a step blocked.
+
 ## Continuous Checkpoint Mode
 
 If `CHECKPOINT_MODE` is `"continuous"`: auto-commit completed logical units with `WIP:` prefix.
@@ -604,7 +614,7 @@ If you are looping on the same diagnostic, same file, or failed fix variants, ST
 
 ## Question Tuning (skip entirely if `QUESTION_TUNING: false`)
 
-Before each AskUserQuestion, choose `question_id` from `scripts/question-registry.ts` or `{skill}-{slug}`, then run `printf '%s' "<question summary>" | ~/.claude/skills/gstuck/output/gstack/bin/gstack-question-preference --check "<id>" --summary-stdin` (piped summary feeds the one-way keyword net, #2024). `AUTO_DECIDE` means choose the recommended option and say "Auto-decided [summary] → [option] (your preference). Change with /plan-tune." `ASK_NORMALLY` means ask.
+Before each AskUserQuestion, choose `question_id` from `~/.claude/skills/gstuck/output/gstack/scripts/question-registry.ts` or `{skill}-{slug}`, then run `printf '%s' "<question summary>" | ~/.claude/skills/gstuck/output/gstack/bin/gstack-question-preference --check "<id>" --summary-stdin` (piped summary feeds the one-way keyword net, #2024). `AUTO_DECIDE` means choose the recommended option and say "Auto-decided [summary] → [option] (your preference). Change with /plan-tune." `ASK_NORMALLY` means ask.
 
 **Embed the question_id as a marker in the question text** so hooks can identify it deterministically (plan-tune cathedral T14 / D18 progressive markers). Append `<gstack-qid:{question_id}>` somewhere in the rendered question (the leading line or trailing line is fine; the marker doesn't render visibly to the user when wrapped in HTML-style angle brackets, but the hook strips it). Without the marker the PreToolUse enforcement hook treats the AUQ as observed-only and never auto-decides — so always include it when the question matches a registered `question_id`.
 
@@ -758,22 +768,16 @@ mv "$HOME/.gbrain/config.json" "$BACKUP"
 # gstack default: voyage-code-3 (1024d) when VOYAGE_API_KEY is set — best for
 # code retrieval. Without the key, fall back to gbrain's own auto-selected
 # embedding provider chain (OpenAI 1536d when OPENAI_API_KEY is present, etc.).
+set --  # flags ride the positional params — unquoted $VAR breaks under zsh word-splitting (#1798)
 if [ -n "${VOYAGE_API_KEY:-}" ]; then
-  if ! gbrain init --pglite --json --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024; then
-    # Restore on failure
-    mv "$BACKUP" "$HOME/.gbrain/config.json"
-    echo "gbrain init failed. Your previous config was restored at $HOME/.gbrain/config.json." >&2
-    echo "PGLite directory at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` if needed before retrying." >&2
-    exit 1
-  fi
-else
-  if ! gbrain init --pglite --json; then
-    # Restore on failure
-    mv "$BACKUP" "$HOME/.gbrain/config.json"
-    echo "gbrain init failed. Your previous config was restored at $HOME/.gbrain/config.json." >&2
-    echo "PGLite directory at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` if needed before retrying." >&2
-    exit 1
-  fi
+  set -- --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024
+fi
+if ! gbrain init --pglite --json "$@"; then
+  # Restore on failure
+  mv "$BACKUP" "$HOME/.gbrain/config.json"
+  echo "gbrain init failed. Your previous config was restored at $HOME/.gbrain/config.json." >&2
+  echo "PGLite directory at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` if needed before retrying." >&2
+  exit 1
 fi
 echo "Switched to local PGLite. Previous config saved at $BACKUP — review before deleting."
 ```
@@ -790,6 +794,51 @@ Step 1.5 — fall through to Step 2 (where `no-cli` triggers Step 3 install and
 `missing-config` triggers Step 4 init).
 
 ---
+
+## Step 1.7: Code-intelligence provider choice (Step 0 of indexing)
+
+You are INSIDE /setup-gbrain: the user asked for gbrain by name, so the
+provider question is already answered. NEVER ask it here, and never let this
+step delay or derail the actual setup. Record the choice best-effort, then
+continue immediately with Step 2:
+
+```bash
+[ -f ~/.claude/skills/gstuck/output/gstack/bin/gstack-code-intelligence ] \
+  && bun ~/.claude/skills/gstuck/output/gstack/bin/gstack-code-intelligence select gbrain 2>/dev/null \
+  || true
+```
+
+The offer ceremony below applies ONLY when this skill is reached from another
+entry point where no provider was named (a routing skill exploring indexing
+options). Even then:
+
+- `"offer": false` with reason `bin-absent` → the installed gstack predates
+  the code-intelligence CLI. Skip this step entirely and continue with the
+  skill — the user asked for gbrain, so set up gbrain. Never block setup on
+  a missing optional gate.
+
+- `"offer": false` with reason `small-repo` → grep is already fast here; say
+  so in one line and continue with this skill only if the user asked for
+  gbrain by name.
+- `"offer": false` with reason `provider-selected` or `declined` → the
+  machine-wide question was already answered; apply it silently and continue.
+- `"offer": true` → present the returned options ONCE via AskUserQuestion:
+  **GBrain** (recommended — semantic memory + code, sends repo content to
+  YOUR gbrain DB, per-repo consent), **Sourcebot** (self-hosted whole-repo
+  search, local when on localhost), **Graphify** (local tree-sitter graph,
+  nothing leaves the machine, user installs it), or **No indexing**. Record
+  the choice: `gstack-code-intelligence select <provider|none>` — `none`
+  persists the decline so NO skill ever asks again, on any repo
+  (re-enable: `gstack-code-intelligence select <provider>`). Local-compute
+  and remote-send providers are separate consents — never bundle them.
+- Per-repo send consent (GBrain/Sourcebot) is recorded with
+  `gstack-code-intelligence consent <repo> yes|no` and is ALWAYS vetoed by a
+  `deny` tier in gstack-gbrain-repo-policy — the trust store is the single
+  authority for whether code leaves a repo.
+
+If the user picked GBrain (or asked for this skill directly), continue below.
+If they picked Sourcebot/Graphify, run `gstack-code-intelligence index <repo>`
+and stop — the rest of this skill is gbrain-specific.
 
 ## Step 2: Pick a path (AskUserQuestion)
 
@@ -978,11 +1027,11 @@ Then follow the same secret-read + verify + init flow as Path 1.
 # gstack default: voyage-code-3 (1024d) when VOYAGE_API_KEY is set — code
 # retrieval beats general-purpose embeddings on real code queries (validated
 # A/B). Without the key, gbrain auto-selects (OpenAI 1536d when available).
+set --  # flags ride the positional params — unquoted $VAR breaks under zsh word-splitting (#1798)
 if [ -n "${VOYAGE_API_KEY:-}" ]; then
-  gbrain init --pglite --json --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024
-else
-  gbrain init --pglite --json
+  set -- --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024
 fi
+gbrain init --pglite --json "$@"
 ```
 
 Done. No network, no secrets (beyond Voyage embedding API calls during sync, if
@@ -1070,18 +1119,14 @@ fi
 # VOYAGE_API_KEY is set. It wins the A/B over voyage-4-large and OpenAI
 # text-embedding-3-large on this codebase's symbol queries. Falls back to
 # gbrain's auto-selected provider when the key isn't present.
+set --  # flags ride the positional params — unquoted $VAR breaks under zsh word-splitting (#1798)
 if [ -n "${VOYAGE_API_KEY:-}" ]; then
-  if ! gbrain init --pglite --json --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024; then
-    if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$HOME/.gbrain/config.json"; fi
-    echo "gbrain init failed. Existing config (if any) was restored. PGLite at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` to reset." >&2
-    echo "Continuing setup without local code search; you can re-run /setup-gbrain to retry." >&2
-  fi
-else
-  if ! gbrain init --pglite --json; then
-    if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$HOME/.gbrain/config.json"; fi
-    echo "gbrain init failed. Existing config (if any) was restored. PGLite at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` to reset." >&2
-    echo "Continuing setup without local code search; you can re-run /setup-gbrain to retry." >&2
-  fi
+  set -- --embedding-model voyage:voyage-code-3 --embedding-dimensions 1024
+fi
+if ! gbrain init --pglite --json "$@"; then
+  if [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$HOME/.gbrain/config.json"; fi
+  echo "gbrain init failed. Existing config (if any) was restored. PGLite at ~/.gbrain/pglite/ may be in a partial state — \`rm -rf ~/.gbrain/pglite\` to reset." >&2
+  echo "Continuing setup without local code search; you can re-run /setup-gbrain to retry." >&2
 fi
 ```
 
@@ -1325,7 +1370,7 @@ curated `~/.gstack/` artifacts into gbrain so the retrieval surface
 
 Run the probe to size the operation:
 ```bash
-~/.claude/skills/gstuck/output/gstack/bin/gstack-memory-ingest --probe
+bun run ~/.claude/skills/gstuck/output/gstack/bin/gstack-memory-ingest.ts --probe
 ```
 
 Read the output. If `Total files in window: 0`, skip — there's nothing
@@ -1333,7 +1378,7 @@ to ingest. Set `gstack-config set transcript_ingest_mode incremental`
 silently and continue to Step 8.
 
 If `New (never ingested)` is < 200 AND total bytes are < 100MB: silent
-bulk via `gstack-memory-ingest --bulk --quiet`. Set
+bulk via `bun run ~/.claude/skills/gstuck/output/gstack/bin/gstack-memory-ingest.ts --bulk --quiet`. Set
 `transcript_ingest_mode=incremental` and continue.
 
 Otherwise (the "many transcripts on disk" path): AskUserQuestion with
@@ -1370,14 +1415,14 @@ Options:
 After answer:
 ```bash
 ~/.claude/skills/gstuck/output/gstack/bin/gstack-config set transcript_ingest_mode <choice>
-~/.claude/skills/gstuck/output/gstack/bin/gstack-gbrain-sync --full --no-brain-sync
+bun run ~/.claude/skills/gstuck/output/gstack/bin/gstack-gbrain-sync.ts --full --no-brain-sync
 ```
 (`--no-brain-sync` because Step 7 already wired that path; this just
 runs the code import + memory ingest stages. Brain-sync will run on the
 next preamble hook.)
 
 If A/D/E, ingest is incremental from this point on; preamble-boundary
-hook runs `gstack-gbrain-sync --incremental --quiet` on every skill
+hook runs `bun run ~/.claude/skills/gstuck/output/gstack/bin/gstack-gbrain-sync.ts --incremental --quiet` on every skill
 start (cheap mtime fast-path).
 
 Reference doc for users: `setup-gbrain/memory.md` (linked from CLAUDE.md

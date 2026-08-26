@@ -1,48 +1,8 @@
-import type { HostConfig } from '../scripts/host-config';
+import { defineHost } from './define-host';
 
-const cursor: HostConfig = {
+const cursor = defineHost({
   name: 'cursor',
   displayName: 'Cursor',
-  cliCommand: 'cursor',
-  cliAliases: [],
-
-  globalRoot: '.cursor/skills/gstuck/output/gstack',
-  localSkillRoot: '.cursor/skills/gstuck/output/gstack',
-  hostSubdir: '.cursor',
-  usesEnvVars: true,
-
-  frontmatter: {
-    mode: 'allowlist',
-    keepFields: ['name', 'description'],
-    descriptionLimit: null,
-  },
-
-  generation: {
-    generateMetadata: false,
-    skipSkills: ['codex'],
-  },
-
-  pathRewrites: [
-    { from: '~/.claude/skills/gstuck/output/gstack', to: '~/.cursor/skills/gstuck/output/gstack' },
-    { from: '.claude/skills/gstuck/output/gstack', to: '.cursor/skills/gstuck/output/gstack' },
-    { from: '.claude/skills', to: '.cursor/skills' },
-  ],
-
-  suppressedResolvers: ['GBRAIN_CONTEXT_LOAD', 'GBRAIN_SAVE_RESULTS'],
-
-  runtimeRoot: {
-    globalSymlinks: ['bin', 'browse/dist', 'browse/bin', 'gstack-upgrade', 'ETHOS.md'],
-    globalFiles: {
-      'review': ['checklist.md', 'TODOS-format.md'],
-    },
-  },
-
-  install: {
-    prefixable: false,
-    linkingStrategy: 'symlink-generated',
-  },
-
-  learningsMode: 'basic',
-};
+});
 
 export default cursor;
