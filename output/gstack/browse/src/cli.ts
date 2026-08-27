@@ -18,6 +18,9 @@ import { resolveConfig, ensureStateDir, readVersionHash, isPairAgentEnabled } fr
 import { parseProxyConfig, computeConfigHash, ProxyConfigError } from './proxy-config';
 import { redactProxyUrl } from './proxy-redact';
 import { spawnTerminalAgent } from './terminal-agent-control';
+// Zero side effects on import (documented invariant in token-registry.ts) —
+// safe to pull the shared pairing default into the CLI.
+import { DEFAULT_PAIR_SCOPES } from './token-registry';
 
 const config = resolveConfig();
 const IS_WINDOWS = process.platform === 'win32';
@@ -159,6 +162,22 @@ export async function isServerHealthy(port: number, timeoutMs = 2000): Promise<b
   }
 }
 
+/** Best-effort tab count via GET /health (no auth, bounded). Returns null
+ * when the daemon doesn't answer in time or predates the `tabs` field —
+ * callers degrade to a countless phrasing, never block on this. */
+async function fetchDaemonTabCount(port: number, timeoutMs = 2000): Promise<number | null> {
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return null;
+    const health = await resp.json() as any;
+    return typeof health.tabs === 'number' ? health.tabs : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Process Management ─────────────────────────────────────────
 async function killServer(pid: number): Promise<void> {
   if (!isProcessAlive(pid)) return;
@@ -212,6 +231,7 @@ function cleanupLegacyState(): void {
         if (data.pid && isProcessAlive(data.pid)) {
           // Verify this is actually a browse server before killing
           const check = Bun.spawnSync(['ps', '-p', String(data.pid), '-o', 'command='], {
+      windowsHide: true,
             stdout: 'pipe', stderr: 'pipe', timeout: 2000,
           });
           const cmd = check.stdout.toString().trim();
@@ -1084,6 +1104,164 @@ export function extractGlobalFlags(rawArgs: string[], env: NodeJS.ProcessEnv): G
   };
 }
 
+// ─── Tunnel token management (pre-server, #2254 pattern) ────────
+// Tokens live in daemon memory, so a dead daemon means "nothing is paired" —
+// a success state, not an error. Never boot a daemon to serve these, and
+// never mutate the state file (stale-state cleanup stays stop's job).
+
+/** Live-daemon check for tunnel subcommands. Dead pid AND failed health →
+ * null. An alive pid with an unreachable port falls through to the HTTP
+ * call, whose failure is reported truthfully (exit 1), not as "no daemon". */
+async function tunnelDaemonState(): Promise<ServerState | null> {
+  const state = readState();
+  if (!state) return null;
+  if (!isProcessAlive(state.pid) && !(await isServerHealthy(state.port))) return null;
+  return state;
+}
+
+/** Fetch active agent clientIds (sessions + pending setup keys). Returns
+ * null when the list can't be read — callers must not treat that as empty. */
+async function fetchAgentList(state: ServerState): Promise<Array<{ clientId: string; scopes: string[]; domains?: string[]; expiresAt: string | null; commandCount: number; pending?: boolean }> | null> {
+  try {
+    const resp = await fetch(`http://127.0.0.1:${state.port}/agents`, {
+      headers: { 'Authorization': `Bearer ${state.token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) return null;
+    const body = await resp.json() as { agents?: unknown };
+    if (!Array.isArray(body.agents)) return null;
+    return body.agents as Array<{ clientId: string; scopes: string[]; domains?: string[]; expiresAt: string | null; commandCount: number; pending?: boolean }>;
+  } catch {
+    return null;
+  }
+}
+
+async function tunnelRevoke(name: string): Promise<number> {
+  const state = await tunnelDaemonState();
+  if (!state) {
+    console.log('No daemon running - tokens live in daemon memory, so nothing is paired.');
+    return 0;
+  }
+  let resp: Response;
+  try {
+    resp = await fetch(`http://127.0.0.1:${state.port}/token/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${state.token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (err) {
+    console.error(`[browse] Could not reach daemon: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+  if (resp.status === 404) {
+    console.error(`No paired agent named "${name}".`);
+    const agents = await fetchAgentList(state);
+    if (agents && agents.length) {
+      console.error(`Active agents: ${agents.map(a => a.clientId).join(', ')}`);
+    } else if (agents) {
+      console.error('No agents are currently paired.');
+    }
+    return 1;
+  }
+  if (!resp.ok) {
+    let msg = `HTTP ${resp.status}`;
+    try {
+      const body = await resp.json() as { error?: string };
+      if (body.error) msg = body.error;
+    } catch { /* keep the status-line message */ }
+    console.error(`[browse] Revoke failed: ${msg}`);
+    return 1;
+  }
+  let deleted: number | undefined;
+  try {
+    const body = await resp.json() as { tokens_deleted?: number };
+    if (typeof body.tokens_deleted === 'number') deleted = body.tokens_deleted;
+  } catch { /* old daemons answer {revoked} only — count stays unknown */ }
+  console.log(deleted === undefined
+    ? `Revoked "${name}" (count unknown).`
+    : `Revoked "${name}" (${deleted} token${deleted === 1 ? '' : 's'}).`);
+  // Post-revoke verification: re-read the agent list to PROVE it's gone.
+  // This is also the version-skew net — an old daemon with the first-match
+  // revoke bug returns 200 while the session survives; catch it here.
+  const agents = await fetchAgentList(state);
+  if (agents === null) {
+    console.error('[browse] Revoked, but could not verify against the agent list.');
+    return 1;
+  }
+  if (agents.some(a => a.clientId === name)) {
+    console.error(`[browse] Revocation incomplete: "${name}" is still listed (old daemon or concurrent re-pair). Re-run "tunnel revoke ${name}", or run "stop" to clear every token.`);
+    return 1;
+  }
+  console.log('Verified: not in the active agent list.');
+  return 0;
+}
+
+async function tunnelAgents(): Promise<number> {
+  const state = await tunnelDaemonState();
+  if (!state) {
+    console.log('No daemon running - no paired agents.');
+    return 0;
+  }
+  const agents = await fetchAgentList(state);
+  if (agents === null) {
+    console.error('[browse] Could not read the agent list from the daemon.');
+    return 1;
+  }
+  if (agents.length === 0) {
+    console.log('No paired agents.');
+    return 0;
+  }
+  for (const a of agents) {
+    const pending = a.pending ? '  (pending setup key)' : '';
+    const domains = a.domains && a.domains.length ? a.domains.join(',') : 'any';
+    console.log(`${a.clientId}${pending}  scopes=${(a.scopes || []).join(',')}  domains=${domains}  expires=${a.expiresAt ?? 'never'}  commands=${a.commandCount ?? 0}`);
+  }
+  return 0;
+}
+
+/** Reject pair-agent scope-flag misuse BEFORE any consent or server work.
+ * Bare `--restrict` (or a flag-shaped value from a forgotten argument) used
+ * to parse as "no restriction" and silently grant FULL access — the exact
+ * opposite of the user's intent. And `control` never rides in via --restrict:
+ * browser-wide destructive ops stay behind the explicit --control flag. */
+function validatePairAgentFlags(args: string[]): void {
+  // hasFlag/parseFlag are exact-token matches, so `--restrict=read` would
+  // sail past every check below and silently grant FULL access.
+  if (args.some(a => a.startsWith('--restrict='))) {
+    console.error('[browse] --restrict takes a space-separated value: --restrict read or --restrict "read,write". The --restrict=... form is not supported.');
+    process.exit(1);
+  }
+  if (!hasFlag(args, '--restrict')) return;
+  const restrict = parseFlag(args, '--restrict');
+  if (!restrict || !restrict.trim() || restrict.startsWith('--')) {
+    console.error('[browse] --restrict needs a scope list, e.g. --restrict read or --restrict "read,write". Bare --restrict would silently grant FULL access.');
+    process.exit(1);
+  }
+  if (hasFlag(args, '--control') || hasFlag(args, '--admin')) {
+    // Server-side, the control flag wins and the scopes list is ignored.
+    console.warn('[browse] --restrict is ignored when --control/--admin is set (control implies full access).');
+    return;
+  }
+  if (restrict.split(',').map(s => s.trim()).includes('control')) {
+    console.error('[browse] The control scope is not granted via --restrict. Re-run with --control.');
+    process.exit(1);
+  }
+}
+
+async function handleTunnel(args: string[]): Promise<never> {
+  const sub = args[0];
+  // The name passes through VERBATIM: clientIds are stored untrimmed, so a
+  // space-padded name must stay revocable (encodeURIComponent handles it).
+  if (sub === 'revoke' && args.length === 2 && args[1]) {
+    process.exit(await tunnelRevoke(args[1]));
+  }
+  if (sub === 'agents' && args.length === 1) {
+    process.exit(await tunnelAgents());
+  }
+  console.error('usage: browse tunnel <revoke <agent-name> | agents>');
+  process.exit(1);
+}
+
 async function handlePairAgent(state: ServerState, args: string[]): Promise<void> {
   const clientName = parseFlag(args, '--client') || `remote-${Date.now()}`;
   const domains = parseFlag(args, '--domain')?.split(',').map(d => d.trim());
@@ -1092,8 +1270,12 @@ async function handlePairAgent(state: ServerState, args: string[]): Promise<void
   const localHost = parseFlag(args, '--local');
 
   // Call POST /pair to create a setup key
-  // Default: full access (read+write+admin+meta). --control adds browser-wide ops.
+  // Default: DEFAULT_PAIR_SCOPES (full page access). --control adds browser-wide ops.
   // --restrict limits: --restrict read (read-only), --restrict "read,write" (no admin)
+  // Scopes are ALWAYS sent explicitly so the effective default lives in one
+  // place (token-registry) instead of drifting between CLI omission and
+  // server fallback. Flag misuse was rejected pre-server by
+  // validatePairAgentFlags.
   const pairResp = await fetch(`http://127.0.0.1:${state.port}/pair`, {
     method: 'POST',
     headers: {
@@ -1104,7 +1286,9 @@ async function handlePairAgent(state: ServerState, args: string[]): Promise<void
       domains,
       clientId: clientName,
       control,
-      ...(restrict ? { scopes: restrict.split(',').map(s => s.trim()) } : {}),
+      scopes: restrict
+        ? restrict.split(',').map(s => s.trim())
+        : [...DEFAULT_PAIR_SCOPES],
     }),
     signal: AbortSignal.timeout(5000),
   });
@@ -1286,6 +1470,7 @@ Multi-step:     chain (reads JSON from stdin)
 Tabs:           tabs | tab <id> | newtab [url] | closetab [id]
 Server:         status | cookie <n>=<v> | header <n>:<v>
                 useragent <str> | stop | restart
+                tunnel revoke <name> | tunnel agents  (paired-agent tokens)
                 --force-restart: replace a live-but-busy daemon (any command;
                 LOSES tabs/cookies/logins — never done automatically)
 Dialogs:        dialog-accept [text] | dialog-dismiss
@@ -1624,10 +1809,33 @@ Refs:           After 'snapshot', use @e1, @e2... as selectors:
     // sendCommand('stop') path (graceful shutdown; busy semantics apply).
   }
 
+  // ─── Tunnel token management (pre-server short-circuit, #2254) ──
+  // Tokens live in daemon memory; a dead daemon has nothing to revoke or
+  // list, so never boot one to serve these.
+  if (command === 'tunnel') {
+    await handleTunnel(commandArgs); // always exits
+  }
+
   // Special case: chain reads from stdin
   if (command === 'chain' && commandArgs.length === 0) {
     const stdin = await Bun.stdin.text();
     commandArgs.push(stdin.trim());
+  }
+
+  // #2219 IRON RULE (pair-agent leg): capture whether a LIVE daemon predates
+  // this invocation BEFORE ensureServer() can start a fresh one. pair-agent's
+  // headed switch below replaces the daemon via `connect --force-restart` —
+  // a kill that loses tabs/cookies/logins — so a PRE-EXISTING live daemon may
+  // only be replaced with the user's explicit --force-restart consent. A
+  // daemon that ensureServer just booted for this invocation holds no session
+  // state, so replacing it kills nothing the user had.
+  let pairAgentPreexistingDaemonAlive = false;
+  if (command === 'pair-agent') {
+    // Scope-flag misuse is rejected before consent gates and ensureServer —
+    // an arg error must never boot a daemon.
+    validatePairAgentFlags(commandArgs);
+    const preState = readState();
+    pairAgentPreexistingDaemonAlive = Boolean(preState?.pid && isProcessAlive(preState.pid));
   }
 
   let state = await ensureServer(globalFlags);
@@ -1637,27 +1845,42 @@ Refs:           After 'snapshot', use @e1, @e2... as selectors:
     // Ensure headed mode — the user should see the browser window
     // when sharing it with another agent. Feels safer, more impressive.
     if (state.mode !== 'headed' && !hasFlag(commandArgs, '--headless')) {
-      console.log('[browse] Opening GStack Browser so you can see what the remote agent does...');
-      // In compiled binaries, process.argv[1] is /$bunfs/... (virtual).
-      // Use process.execPath which is the real binary on disk.
-      const browseBin = process.execPath;
-      // --force-restart: the headed switch is this command's explicit purpose
-      // (the user asked to SEE the shared browser), and connect's #2219 guard
-      // would otherwise refuse to replace the healthy headless daemon.
-      const connectProc = Bun.spawn([browseBin, 'connect', '--force-restart'], {
-        cwd: process.cwd(),
-        stdio: ['ignore', 'inherit', 'inherit'],
-        // Disable parent-PID monitoring: pair-agent needs the server to outlive
-        // the connect subprocess. Setting to 0 tells the server not to self-terminate.
-        env: { ...process.env, BROWSE_PARENT_PID: '0' },
-      });
-      await connectProc.exited;
-      // Re-read state after headed mode switch
-      const newState = readState();
-      if (newState && await isServerHealthy(newState.port)) {
-        state = newState as ServerState;
+      if (pairAgentPreexistingDaemonAlive && !globalFlags.forceRestart) {
+        // #2219 IRON RULE: only an explicit --force-restart may kill a live
+        // daemon. The headed switch is nice-to-have; the user's open tabs,
+        // cookies, and logins are not. Continue against the live headless
+        // daemon and tell the user how to opt into the headed relaunch.
+        const tabCount = await fetchDaemonTabCount(state.port);
+        const tabsPhrase = tabCount === null
+          ? 'open tabs'
+          : `${tabCount} tab${tabCount === 1 ? '' : 's'}`;
+        console.warn(`[browse] Live headless daemon has ${tabsPhrase}; continuing against it — pass --force-restart to relaunch headed, losing tabs/cookies.`);
       } else {
-        console.warn('[browse] Could not switch to headed mode. Continuing headless.');
+        console.log('[browse] Opening GStack Browser so you can see what the remote agent does...');
+        // In compiled binaries, process.argv[1] is /$bunfs/... (virtual).
+        // Use process.execPath which is the real binary on disk.
+        const browseBin = process.execPath;
+        // --force-restart: reaching this branch means either no live daemon
+        // predated this invocation (nothing of the user's dies) or the user
+        // explicitly passed --force-restart to pair-agent (consent given).
+        // connect's #2219 guard would otherwise refuse to replace the
+        // healthy headless daemon ensureServer just returned.
+        const connectProc = Bun.spawn([browseBin, 'connect', '--force-restart'], {
+          windowsHide: true,
+          cwd: process.cwd(),
+          stdio: ['ignore', 'inherit', 'inherit'],
+          // Disable parent-PID monitoring: pair-agent needs the server to outlive
+          // the connect subprocess. Setting to 0 tells the server not to self-terminate.
+          env: { ...process.env, BROWSE_PARENT_PID: '0' },
+        });
+        await connectProc.exited;
+        // Re-read state after headed mode switch
+        const newState = readState();
+        if (newState && await isServerHealthy(newState.port)) {
+          state = newState as ServerState;
+        } else {
+          console.warn('[browse] Could not switch to headed mode. Continuing headless.');
+        }
       }
     }
     await handlePairAgent(state, commandArgs);

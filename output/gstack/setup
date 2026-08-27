@@ -1916,27 +1916,113 @@ rm -f /tmp/gstack-latest-version
 
 # 10. Team mode: register/unregister SessionStart hook
 SETTINGS_HOOK="$SOURCE_GSTACK_DIR/bin/gstack-settings-hook"
+
+# ─── Canonical hook paths + self-heal (phantom-hooks fix) ─────────────────────
+# Hook commands written to GLOBAL settings.json must survive deletion of the
+# tree setup ran from: SOURCE_GSTACK_DIR is `pwd -P` of the running tree, which
+# for Conductor workspaces / manual worktrees / temp clones is EPHEMERAL —
+# baking it produced dead hooks erroring on every AskUserQuestion until v1.67.
+# Hook registration is therefore CANONICAL-ONLY: the stable install path below,
+# or no registration at all. By this point setup has already installed/linked
+# the canonical tree, so a missing canonical hook means "don't register", never
+# "fall back to the running tree". The canonical path is symlink-preserving, so
+# re-pointing ~/.claude/skills/gstack at a new clone heals every hook with zero
+# settings writes. Repo-local --local installs don't register global Claude
+# hooks (by design).
+#
+# WARNING for future code AND migrations (the v1.58.0.0.sh defect class):
+# NEVER register ${SCRIPT_DIR}/$SOURCE_GSTACK_DIR-relative hook paths.
+CANONICAL_GSTACK_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/gstack"
+# Split-brain guard: the installer currently hardcodes $HOME/.claude/skills
+# (setup:1601 TODO), so a CLAUDE_CONFIG_DIR override can name a root that was
+# never installed. Fall back to where the install actually lives — both are
+# stable, neither is the running tree, so canonical-only still holds.
+if [ ! -x "$CANONICAL_GSTACK_ROOT/bin/gstack-session-update" ] \
+   && [ -x "$HOME/.claude/skills/gstack/bin/gstack-session-update" ]; then
+  CANONICAL_GSTACK_ROOT="$HOME/.claude/skills/gstack"
+fi
+
+# Echo the canonical path for a hook (repo-relative arg); fails when the hook
+# is not executable at the canonical install — callers must skip + log.
+_hook_command_path() {
+  if [ -x "$CANONICAL_GSTACK_ROOT/$1" ]; then
+    printf '%s\n' "$CANONICAL_GSTACK_ROOT/$1"
+    return 0
+  fi
+  return 1
+}
+
+# Heal-first: prune dead gstack hook entries and re-point survivors at the
+# stable install BEFORE any tag-presence guard below (a dead entry carrying the
+# tag otherwise blocks re-registration forever — the missing-Stop-hook failure
+# mode). Runs on EVERY setup, including --no-team, so upgrades self-heal
+# without migrations. One log line only when something actually changed; stderr
+# passes through uncaptured (zero silent failures).
+if [ -x "$SETTINGS_HOOK" ]; then
+  if [ -d "$CANONICAL_GSTACK_ROOT" ]; then
+    _HEAL_OUT=$("$SETTINGS_HOOK" prune-stale --repoint "$CANONICAL_GSTACK_ROOT" || true)
+  else
+    _HEAL_OUT=$("$SETTINGS_HOOK" prune-stale || true)
+  fi
+  _HEAL_REMOVED=$(printf '%s' "$_HEAL_OUT" | sed -n 's/^OK: removed \([0-9]*\).*/\1/p')
+  _HEAL_REPOINTED=$(printf '%s' "$_HEAL_OUT" | sed -n 's/.*repointed \([0-9]*\).*/\1/p')
+  if [ "${_HEAL_REMOVED:-0}" -gt 0 ] 2>/dev/null || [ "${_HEAL_REPOINTED:-0}" -gt 0 ] 2>/dev/null; then
+    log "  healed hook registrations: removed ${_HEAL_REMOVED:-0}, repointed ${_HEAL_REPOINTED:-0} (backup: settings.json.bak.<ts>; note: later registrations in this run move the rollback pointer — restore the heal's own .bak file directly if needed)"
+  fi
+  # Explicit opt-out + live plan-tune hooks is a contradiction worth surfacing:
+  # the heal honors the opt-out (dead plan-tune entries pruned, never
+  # re-pointed) but live hooks stay until the user removes them.
+  if "$GSTACK_CONFIG" has plan_tune_hooks 2>/dev/null; then
+    _PT_CFG_VAL=$("$GSTACK_CONFIG" get plan_tune_hooks 2>/dev/null || true)
+    case "$(printf '%s' "$_PT_CFG_VAL" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+      n|no|false|skip|off|0)
+        if "$SETTINGS_HOOK" list-sources 2>/dev/null | grep -q "plan-tune-cathedral"; then
+          log "  note: plan_tune_hooks is 'no' in config but live plan-tune hooks exist — remove with ./setup --no-team or $SETTINGS_HOOK remove-source --source plan-tune-cathedral"
+        fi
+        ;;
+    esac
+  fi
+fi
+
 # On Windows (Git Bash / MSYS2 / Cygwin), extensionless scripts can't be
 # launched directly by the OS — the file-association dialog appears instead.
 # Prefix with 'bash' so Claude Code's hook runner invokes Git Bash explicitly.
-if [ "$IS_WINDOWS" -eq 1 ]; then
-  HOOK_CMD="bash $SOURCE_GSTACK_DIR/bin/gstack-session-update"
-else
-  HOOK_CMD="$SOURCE_GSTACK_DIR/bin/gstack-session-update"
+# Paths with whitespace are quoted so the hook command survives shell parsing.
+SESSION_UPDATE_CMD="$(_hook_command_path bin/gstack-session-update || true)"
+HOOK_CMD=""
+if [ -n "$SESSION_UPDATE_CMD" ]; then
+  # No caller-side quoting: add-event is the single quoting authority — it
+  # normalizes every registered command through the same gsQuoteCmd round-trip
+  # the healer uses, so metachar/space paths cannot drift per call site.
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    HOOK_CMD="bash $SESSION_UPDATE_CMD"
+  else
+    HOOK_CMD="$SESSION_UPDATE_CMD"
+  fi
 fi
 
 if [ "$TEAM_MODE" -eq 1 ]; then
   "$GSTACK_CONFIG" set auto_upgrade true 2>/dev/null || true
   "$GSTACK_CONFIG" set team_mode true 2>/dev/null || true
 
-  # Register SessionStart hook in Claude Code settings
-  if [ -x "$SETTINGS_HOOK" ]; then
-    "$SETTINGS_HOOK" add "$HOOK_CMD" 2>/dev/null || true
+  # Register SessionStart hook in Claude Code settings (schema-aware: the
+  # legacy `add` action's substring dedupe bypasses the KNOWN_HOOKS identity
+  # system; add-event re-points stale paths in place instead of appending).
+  # stderr stays attached (zero silent settings mutations — a fail-closed
+  # parse error or lock give-up must reach the user).
+  if [ -x "$SETTINGS_HOOK" ] && [ -n "$HOOK_CMD" ]; then
+    "$SETTINGS_HOOK" add-event --event SessionStart --command "$HOOK_CMD" --source gstack-session-update >/dev/null || true
+  elif [ -z "$HOOK_CMD" ]; then
+    log "  SessionStart hook not registered: bin/gstack-session-update missing at $CANONICAL_GSTACK_ROOT (no stable install)"
   fi
 
   log ""
-  log "Team mode enabled: gstack will auto-update at the start of each Claude Code session."
-  log "  Hook: $HOOK_CMD"
+  if [ -n "$HOOK_CMD" ]; then
+    log "Team mode enabled: gstack will auto-update at the start of each Claude Code session."
+    log "  Hook: $HOOK_CMD"
+  else
+    log "Team mode enabled (auto-update hook pending a stable install — re-run ./setup after installing globally)."
+  fi
   log "  To disable: ./setup --no-team"
   log ""
   log "Bootstrap your repo:"
@@ -2041,6 +2127,14 @@ if [ -x "$DETECT_BIN" ]; then
   fi
 fi
 
+# Hook path resolution is CANONICAL-ONLY via the resolver defined near
+# CANONICAL_GSTACK_ROOT above (_hook_command_path): a hook command registered into
+# ~/.claude/settings.json must survive deletion of the directory setup ran
+# from, and no heuristic can enumerate every ephemeral tree (manual worktrees,
+# temp clones, CI checkouts) — so there is deliberately NO fallback to
+# $SOURCE_GSTACK_DIR here. A missing canonical hook means "skip registration
+# with a log line", never "bake the running tree's path".
+
 # 11. Plan-tune cathedral hook install (T8).
 #
 # Registers PostToolUse (deterministic AUQ capture) + PreToolUse (preference
@@ -2049,16 +2143,33 @@ fi
 # per D4 + Codex: never mutate settings.json silently.
 #
 # Idempotent via _gstack_source tag = 'plan-tune-cathedral'. If both hooks
-# already registered under that tag, the install is a no-op (no prompt).
-PLAN_TUNE_LOG_HOOK="$SOURCE_GSTACK_DIR/hosts/claude/hooks/question-log-hook"
-PLAN_TUNE_PREF_HOOK="$SOURCE_GSTACK_DIR/hosts/claude/hooks/question-preference-hook"
-AUQ_ERROR_FALLBACK_HOOK="$SOURCE_GSTACK_DIR/hosts/claude/hooks/auq-error-fallback-hook"
+# already registered under that tag, the install skips the consent prompt and
+# only refreshes the registered command paths in place (ensure-event is a
+# no-op when they already match).
+PLAN_TUNE_LOG_HOOK="$(_hook_command_path hosts/claude/hooks/question-log-hook || true)"
+PLAN_TUNE_PREF_HOOK="$(_hook_command_path hosts/claude/hooks/question-preference-hook || true)"
+AUQ_ERROR_FALLBACK_HOOK="$(_hook_command_path hosts/claude/hooks/auq-error-fallback-hook || true)"
+# Windows: extensionless bash shims need the explicit 'bash ' prefix (same
+# rationale as HOOK_CMD above — the OS file-association dialog otherwise).
+# KNOWN_HOOKS identity round-trips the prefix, so healing preserves it.
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  [ -n "$PLAN_TUNE_LOG_HOOK" ] && PLAN_TUNE_LOG_HOOK="bash $PLAN_TUNE_LOG_HOOK"
+  [ -n "$PLAN_TUNE_PREF_HOOK" ] && PLAN_TUNE_PREF_HOOK="bash $PLAN_TUNE_PREF_HOOK"
+  [ -n "$AUQ_ERROR_FALLBACK_HOOK" ] && AUQ_ERROR_FALLBACK_HOOK="bash $AUQ_ERROR_FALLBACK_HOOK"
+fi
 PLAN_TUNE_INSTALL_MARKER="$HOME/.gstack/.plan-tune-hooks-prompted"
+
+# Canonical-only: an ephemeral tree with no stable install gets a visible skip,
+# never a baked worktree path.
+if [ "$NO_TEAM_MODE" -ne 1 ] && [ -x "$SETTINGS_HOOK" ] \
+   && { [ -z "$PLAN_TUNE_LOG_HOOK" ] || [ -z "$PLAN_TUNE_PREF_HOOK" ]; }; then
+  log "  AskUserQuestion hooks not registered: hooks missing at $CANONICAL_GSTACK_ROOT (no stable install)"
+fi
 
 if [ "$NO_TEAM_MODE" -ne 1 ] \
    && [ -x "$SETTINGS_HOOK" ] \
-   && [ -x "$PLAN_TUNE_LOG_HOOK" ] \
-   && [ -x "$PLAN_TUNE_PREF_HOOK" ]; then
+   && [ -n "$PLAN_TUNE_LOG_HOOK" ] \
+   && [ -n "$PLAN_TUNE_PREF_HOOK" ]; then
 
   # Already installed? Require BOTH the plan-tune source AND the AUQ-error-fallback
   # source — so an existing install that predates the fallback hook re-runs the
@@ -2078,9 +2189,25 @@ if [ "$NO_TEAM_MODE" -ne 1 ] \
   # This guarantees scripted/workspace setups (conductor, CI) are never
   # interactive: pass --no-plan-tune-hooks (or --plan-tune-hooks) and the
   # block runs to completion with no `read`.
-  PT_DECISION="$PLAN_TUNE_HOOKS_MODE"
-  [ -z "$PT_DECISION" ] && PT_DECISION="${GSTACK_PLAN_TUNE_HOOKS:-}"
-  [ -z "$PT_DECISION" ] && PT_DECISION="$("$GSTACK_CONFIG" get plan_tune_hooks 2>/dev/null || true)"
+  # PT_EXPLICIT provenance: an EXPLICIT decision (CLI flag, env var, or a key
+  # literally present in the config file) must never be overridden by the
+  # Conductor auto-opt-in below. `gstack-config get` returns the default
+  # "prompt" for absent keys, so provenance uses `gstack-config has` (which
+  # resolves GSTACK_STATE_ROOT/GSTACK_HOME/GSTACK_STATE_DIR the same way get
+  # does — never grep a hardcoded ~/.gstack/config.yaml).
+  PT_EXPLICIT=0
+  if [ -n "$PLAN_TUNE_HOOKS_MODE" ]; then
+    PT_DECISION="$PLAN_TUNE_HOOKS_MODE"
+    PT_EXPLICIT=1
+  elif [ -n "${GSTACK_PLAN_TUNE_HOOKS:-}" ]; then
+    PT_DECISION="${GSTACK_PLAN_TUNE_HOOKS}"
+    PT_EXPLICIT=1
+  else
+    PT_DECISION="$("$GSTACK_CONFIG" get plan_tune_hooks 2>/dev/null || true)"
+    if "$GSTACK_CONFIG" has plan_tune_hooks 2>/dev/null; then
+      PT_EXPLICIT=1
+    fi
+  fi
   # Normalize: strip whitespace + lowercase so "YES", "Yes", " yes" from a flag
   # or env var all resolve correctly (an unrecognized opt-in must NOT silently
   # downgrade to skip). Unknown values fall through to "prompt".
@@ -2097,24 +2224,35 @@ if [ "$NO_TEAM_MODE" -ne 1 ] \
   # falls through to "prompt" → the non-interactive skip below, leaving Conductor
   # users without that backstop. Treat Conductor as an implicit opt-in — but
   # only on the silent fall-through, never overriding an explicit --no-plan-tune-hooks.
-  if [ "$PT_DECISION" = "prompt" ] && { [ -n "${CONDUCTOR_WORKSPACE_PATH:-}" ] || [ -n "${CONDUCTOR_PORT:-}" ]; }; then
+  # Only the true silent fall-through auto-opts-in. An explicit
+  # --plan-tune-hooks=prompt (bin/dev-setup passes exactly this so ephemeral
+  # workspace setups never install) stays "prompt" — this was the bug that
+  # baked worktree hook paths into every Conductor user's settings.json.
+  if [ "$PT_DECISION" = "prompt" ] && [ "$PT_EXPLICIT" -eq 0 ] && { [ -n "${CONDUCTOR_WORKSPACE_PATH:-}" ] || [ -n "${CONDUCTOR_PORT:-}" ]; }; then
     PT_DECISION="yes"
     _PT_CONDUCTOR_AUTO=1
   fi
 
   _install_plan_tune_hooks() {
-    "$SETTINGS_HOOK" add-event \
+    # ensure-event (not add-event): registers when missing, RE-POINTS a stale
+    # command path in place when the registration differs, and is a true no-op
+    # (no write, no backup churn) when it already matches.
+    # Returns non-zero if ANY registration was skipped (lock contention or a
+    # fail-closed settings error) so callers log honestly instead of claiming
+    # success for a mutation that never happened.
+    local _pt_install_rc=0
+    "$SETTINGS_HOOK" ensure-event \
       --event PostToolUse \
       --matcher '(AskUserQuestion|mcp__.*__AskUserQuestion)' \
       --command "$PLAN_TUNE_LOG_HOOK" \
       --source plan-tune-cathedral \
-      --timeout 5
-    "$SETTINGS_HOOK" add-event \
+      --timeout 5 || _pt_install_rc=1
+    "$SETTINGS_HOOK" ensure-event \
       --event PreToolUse \
       --matcher '(AskUserQuestion|mcp__.*__AskUserQuestion)' \
       --command "$PLAN_TUNE_PREF_HOOK" \
       --source plan-tune-cathedral \
-      --timeout 5
+      --timeout 5 || _pt_install_rc=1
     # AskUserQuestion-failure prose-fallback reliability hook (OV3:B). Fires only when
     # an AskUserQuestion call returns an error/missing result; inert on success and
     # inert if the platform doesn't invoke PostToolUse on tool errors. MUST use its
@@ -2122,28 +2260,42 @@ if [ "$NO_TEAM_MODE" -ne 1 ] \
     # REPLACES the entry's hooks, so sharing 'plan-tune-cathedral' would overwrite the
     # question-log capture hook (same event+matcher). A distinct source = a second
     # PostToolUse entry; both run in parallel.
-    if [ -x "$AUQ_ERROR_FALLBACK_HOOK" ]; then
-      "$SETTINGS_HOOK" add-event \
+    if [ -n "$AUQ_ERROR_FALLBACK_HOOK" ]; then
+      "$SETTINGS_HOOK" ensure-event \
         --event PostToolUse \
         --matcher '(AskUserQuestion|mcp__.*__AskUserQuestion)' \
         --command "$AUQ_ERROR_FALLBACK_HOOK" \
         --source auq-error-fallback \
-        --timeout 5
+        --timeout 5 || _pt_install_rc=1
     fi
+    return $_pt_install_rc
   }
 
   if [ "$ALREADY_INSTALLED" -eq 1 ]; then
+    # Consent already recorded — no prompt. But a registration from an earlier
+    # setup may carry a stale absolute path (a since-deleted dev worktree);
+    # ensure-event re-points it in place and no-ops when everything matches.
+    # Non-fatal to setup, but never silent: the hardened settings-hook refuses
+    # to rewrite a corrupt settings.json (exit 1), and swallowing that refusal
+    # left users with stale hooks and no signal.
+    if ! _PT_ENSURE_ERR=$(_install_plan_tune_hooks 2>&1 >/dev/null); then
+      log "  warning: settings hook update failed: $(printf '%s\n' "$_PT_ENSURE_ERR" | head -1) — run $SETTINGS_HOOK manually"
+    fi
     log ""
     log "Plan-tune hooks already installed. Run \`$SETTINGS_HOOK list-sources\` to inspect."
   elif [ "$PT_DECISION" = "yes" ]; then
     # Explicit opt-in (flag / env / config) or Conductor implicit opt-in. Non-interactive.
-    _install_plan_tune_hooks
-    log ""
-    if [ "${_PT_CONDUCTOR_AUTO:-0}" -eq 1 ]; then
-      log "AskUserQuestion reliability hooks installed (Conductor detected): decisions"
-      log "render as a prose brief instead of the flaky AskUserQuestion tool. Inspect with /plan-tune."
+    if _install_plan_tune_hooks; then
+      log ""
+      if [ "${_PT_CONDUCTOR_AUTO:-0}" -eq 1 ]; then
+        log "AskUserQuestion reliability hooks installed (Conductor detected): decisions"
+        log "render as a prose brief instead of the flaky AskUserQuestion tool. Inspect with /plan-tune."
+      else
+        log "Plan-tune hooks installed. Run /plan-tune anytime to inspect."
+      fi
     else
-      log "Plan-tune hooks installed. Run /plan-tune anytime to inspect."
+      log ""
+      log "  warning: some AskUserQuestion hooks were NOT registered (settings lock contention or a settings error above) — re-run ./setup to complete."
     fi
     touch "$PLAN_TUNE_INSTALL_MARKER"
   elif [ "$PT_DECISION" = "no" ]; then
@@ -2188,9 +2340,13 @@ if [ "$NO_TEAM_MODE" -ne 1 ] \
     read -t "$_PT_PROMPT_TIMEOUT" -r PLAN_TUNE_INSTALL_REPLY </dev/tty 2>/dev/null || PLAN_TUNE_INSTALL_REPLY=""
     case "$PLAN_TUNE_INSTALL_REPLY" in
       y|Y)
-        _install_plan_tune_hooks
-        log ""
-        log "Plan-tune hooks installed. Run /plan-tune anytime to inspect."
+        if _install_plan_tune_hooks; then
+          log ""
+          log "Plan-tune hooks installed. Run /plan-tune anytime to inspect."
+        else
+          log ""
+          log "  warning: some AskUserQuestion hooks were NOT registered (settings lock contention or a settings error above) — re-run ./setup to complete."
+        fi
         touch "$PLAN_TUNE_INSTALL_MARKER"
         ;;
       n|N)
@@ -2225,25 +2381,58 @@ fi
 # unenforceable — interrupted sessions leaked started > completed forever.
 # Register a Stop-event hook that closes dangling entries. FAIL-OPEN contract
 # (F5): the hook always exits 0 and repairs best-effort — it can never block
-# a session. Idempotent via the (event, source) dedup in gstack-settings-hook;
-# removed by --no-team and gstack-uninstall.
-TIMELINE_STOP_HOOK="$SOURCE_GSTACK_DIR/hosts/claude/hooks/timeline-stop-hook"
-if [ "$NO_TEAM_MODE" -ne 1 ] && [ -x "$SETTINGS_HOOK" ] && [ -x "$TIMELINE_STOP_HOOK" ]; then
-  if ! "$SETTINGS_HOOK" list-sources 2>/dev/null | grep -q "gstack-timeline-stop"; then
-    if "$SETTINGS_HOOK" add-event \
-      --event Stop \
-      --command "$TIMELINE_STOP_HOOK" \
-      --source gstack-timeline-stop \
-      --timeout 5 >/dev/null 2>&1; then
-      log "  registered Stop hook: session timeline entries now close even when a skill is interrupted (backup: settings.json.bak.<ts>; remove: $SETTINGS_HOOK remove-source --source gstack-timeline-stop)"
-    fi
+# a session. Removed by --no-team and gstack-uninstall.
+#
+# The command path is canonical-only (see _hook_command_path): a dev-worktree
+# setup used to bake its own absolute dir into settings.json, so deleting the
+# worktree left a dead hook erroring on every session stop — and the old
+# presence-only dedup (list-sources | grep) never re-pointed it on a re-run.
+# ensure-event registers when missing, replaces a stale path in place (one
+# atomic write — never zero or two registrations), and no-ops when the
+# registration already matches.
+TIMELINE_STOP_HOOK="$(_hook_command_path hosts/claude/hooks/timeline-stop-hook || true)"
+if [ "$IS_WINDOWS" -eq 1 ] && [ -n "$TIMELINE_STOP_HOOK" ]; then
+  TIMELINE_STOP_HOOK="bash $TIMELINE_STOP_HOOK"
+fi
+if [ "$NO_TEAM_MODE" -ne 1 ] && [ -x "$SETTINGS_HOOK" ] && [ -n "$TIMELINE_STOP_HOOK" ]; then
+  if _TL_ENSURE_OUT=$("$SETTINGS_HOOK" ensure-event \
+    --event Stop \
+    --command "$TIMELINE_STOP_HOOK" \
+    --source gstack-timeline-stop \
+    --timeout 5 2>&1); then
+    case "$_TL_ENSURE_OUT" in
+      *unchanged*)
+        : # already registered with the canonical command — quiet no-op
+        ;;
+      *re-pointed*)
+        log "  re-pointed Stop hook to $TIMELINE_STOP_HOOK (previous registration held a stale path)"
+        ;;
+      *)
+        log "  registered Stop hook: session timeline entries now close even when a skill is interrupted (backup: settings.json.bak.<ts>; remove: $SETTINGS_HOOK remove-source --source gstack-timeline-stop)"
+        ;;
+    esac
+  else
+    # Non-fatal to setup, but never silent: the hardened settings-hook refuses
+    # to mutate a corrupt settings.json (exit 3) or under a held lock (exit 5),
+    # and swallowing that refusal left the Stop hook unregistered with no signal.
+    log "  warning: settings hook update failed: $(printf '%s\n' "$_TL_ENSURE_OUT" | head -1) — run $SETTINGS_HOOK manually"
   fi
 fi
 
 # Also tear down plan-tune + timeline hooks on --no-team (matches the existing pattern).
+# Tag-only remove-source misses untagged entries (Claude Code strips
+# _gstack_source), so the identity sweep (prune-stale --all) finishes the job.
+# stderr stays attached on every call: a lock give-up or fail-closed parse
+# error during TEARDOWN must be visible — "the next setup retries" does not
+# apply when the user is turning the hooks off.
 if [ "$NO_TEAM_MODE" -eq 1 ] && [ -x "$SETTINGS_HOOK" ]; then
-  "$SETTINGS_HOOK" remove-source --source plan-tune-cathedral 2>/dev/null || true
-  "$SETTINGS_HOOK" remove-source --source gstack-timeline-stop 2>/dev/null || true
+  "$SETTINGS_HOOK" remove-source --source plan-tune-cathedral >/dev/null || true
+  "$SETTINGS_HOOK" remove-source --source auq-error-fallback >/dev/null || true
+  "$SETTINGS_HOOK" remove-source --source gstack-timeline-stop >/dev/null || true
+  # verify-gate is a user-registered opt-in unrelated to team mode -- turning
+  # team mode off must not delete it (uninstall still sweeps it, correctly,
+  # because there the binary itself is being removed).
+  GSTACK_SWEEP_EXCLUDE_SOURCES="verify-gate" "$SETTINGS_HOOK" prune-stale --all >/dev/null || true
 fi
 
 # ─── Redact pre-push guard consent (#1946) ───────────────────────────────────

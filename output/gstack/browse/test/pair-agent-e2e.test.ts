@@ -194,6 +194,217 @@ describe('pair-agent flow end-to-end (HTTP only, no ngrok)', () => {
     expect(Array.isArray(scopes)).toBe(true);
   });
 
+  // ─── Pair scope contract: defaults, explicit lists, typo naming ───────
+
+  test('default /connect scopes are exactly read,write,admin,meta', async () => {
+    const pairResp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'default-scopes' }),
+    });
+    const { setup_key, scopes: pairScopes } = await pairResp.json() as any;
+    expect(pairScopes).toEqual(['read', 'write', 'admin', 'meta']);
+    const connectResp = await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key }),
+    });
+    const { scopes } = await connectResp.json() as any;
+    expect(scopes).toEqual(['read', 'write', 'admin', 'meta']);
+  });
+
+  test('explicit scopes are honored end-to-end (the --restrict wire contract)', async () => {
+    const pairResp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'restricted-scopes', scopes: ['read'] }),
+    });
+    const { setup_key } = await pairResp.json() as any;
+    const connectResp = await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key }),
+    });
+    const { scopes } = await connectResp.json() as any;
+    expect(scopes).toEqual(['read']);
+  });
+
+  test('POST /pair with a scope typo fails fast, naming the scope', async () => {
+    // Regression: pre-fix this returned 200 with a poisoned setup key whose
+    // failure surfaced at /connect as a misleading "Invalid request body".
+    const resp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'typo-agent', scopes: ['raed'] }),
+    });
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as any;
+    expect(body.error).toContain('Invalid scope: raed');
+  });
+
+  test('POST /token with a scope typo names the scope too', async () => {
+    const resp = await fetch(`${daemon.baseUrl}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'typo-token', scopes: ['wirte'] }),
+    });
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as any;
+    expect(body.error).toContain('Invalid scope: wirte');
+  });
+
+  test('control cannot ride in through a /pair scopes list without the control flag', async () => {
+    const resp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'sneaky', scopes: ['read', 'control'] }),
+    });
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as any;
+    expect(body.error).toContain('control');
+  });
+
+  test('scope-denied 403 hint points at --restrict/--control, never --admin', async () => {
+    // Regression: the old hint said "re-pair with --admin", which is a legacy
+    // alias for --control — following it over-granted browser-wide control.
+    const pairResp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'hint-agent', scopes: ['read'] }),
+    });
+    const { setup_key } = await pairResp.json() as any;
+    const connectResp = await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key }),
+    });
+    const { token } = await connectResp.json() as any;
+    const resp = await fetch(`${daemon.baseUrl}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ command: 'goto', args: ['https://example.com'] }),
+    });
+    expect(resp.status).toBe(403);
+    const body = await resp.json() as any;
+    expect(body.hint).toContain('--restrict');
+    expect(body.hint).toContain('--control');
+    expect(body.hint).not.toContain('--admin');
+  });
+
+  // ─── Revocation e2e: revoke-all + the /agents verification surface ────
+
+  test('DELETE /token revokes session AND setup keys; agent leaves /agents; token 401s; re-connect fails', async () => {
+    const pair = async () => {
+      const resp = await fetch(`${daemon.baseUrl}/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+        body: JSON.stringify({ clientId: 'revoke-e2e' }),
+      });
+      return (await resp.json() as any).setup_key as string;
+    };
+    const key1 = await pair();
+    const connectResp = await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key: key1 }),
+    });
+    const { token: scopedToken } = await connectResp.json() as any;
+
+    // A second, UNSPENT setup key for the same clientId (the re-grant hole).
+    const key2 = await pair();
+
+    const pre = await fetch(`${daemon.baseUrl}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${scopedToken}` },
+      body: JSON.stringify({ command: 'status', args: [] }),
+    });
+    expect(pre.status).not.toBe(401);
+
+    // /agents lists the session AND the pending setup key, never the token.
+    const agentsPre = await (await fetch(`${daemon.baseUrl}/agents`, {
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    })).json() as any;
+    expect(agentsPre.agents.some((a: any) => a.clientId === 'revoke-e2e' && !a.pending)).toBe(true);
+    expect(agentsPre.agents.some((a: any) => a.clientId === 'revoke-e2e' && a.pending)).toBe(true);
+    for (const a of agentsPre.agents) expect(a.token).toBeUndefined();
+
+    // Regression: pre-fix this deleted only the spent setup key and returned
+    // a false 200 while the session survived. Count covers session + spent
+    // key + pending key.
+    const del = await fetch(`${daemon.baseUrl}/token/revoke-e2e`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    });
+    expect(del.status).toBe(200);
+    const delBody = await del.json() as any;
+    expect(delBody.revoked).toBe('revoke-e2e');
+    expect(delBody.tokens_deleted).toBe(3);
+
+    // Assert per-clientId absence, NOT list-empty: this file shares one
+    // daemon and other tests' agents remain listed.
+    const agentsPost = await (await fetch(`${daemon.baseUrl}/agents`, {
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    })).json() as any;
+    expect(agentsPost.agents.some((a: any) => a.clientId === 'revoke-e2e')).toBe(false);
+
+    const post = await fetch(`${daemon.baseUrl}/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${scopedToken}` },
+      body: JSON.stringify({ command: 'status', args: [] }),
+    });
+    expect(post.status).toBe(401);
+
+    // The leftover unspent key is dead too (re-grant hole closed).
+    const reconnect = await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key: key2 }),
+    });
+    expect(reconnect.status).toBe(401);
+  });
+
+  test('second DELETE /token for the same clientId returns 404, not a false 200', async () => {
+    // Regression: pre-fix, consecutive DELETEs both returned 200 — the first
+    // consumed the spent setup key, the second the session. Depends on the
+    // previous test having revoked 'revoke-e2e' (bun runs file tests in order).
+    const del = await fetch(`${daemon.baseUrl}/token/revoke-e2e`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    });
+    expect(del.status).toBe(404);
+  });
+
+  test('DELETE /token decodes percent-encoded clientIds', async () => {
+    const pairResp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'space agent' }),
+    });
+    const { setup_key } = await pairResp.json() as any;
+    await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key }),
+    });
+    const del = await fetch(`${daemon.baseUrl}/token/${encodeURIComponent('space agent')}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    });
+    expect(del.status).toBe(200);
+    const agents = await (await fetch(`${daemon.baseUrl}/agents`, {
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    })).json() as any;
+    expect(agents.agents.some((a: any) => a.clientId === 'space agent')).toBe(false);
+  });
+
+  test('DELETE /token with malformed percent-encoding returns 400', async () => {
+    const del = await fetch(`${daemon.baseUrl}/token/%E0%A4%A`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${daemon.token}` },
+    });
+    expect(del.status).toBe(400);
+  });
+
   test('POST /command with no auth returns 401', async () => {
     const resp = await fetch(`${daemon.baseUrl}/command`, {
       method: 'POST',

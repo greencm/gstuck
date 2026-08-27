@@ -6,6 +6,7 @@ import {
   revokeToken, rotateRoot, listTokens, recordCommand,
   serializeRegistry, restoreRegistry, checkConnectRateLimit,
   SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN, SCOPE_CONTROL, SCOPE_META,
+  DEFAULT_PAIR_SCOPES, InvalidScopeError,
   __resetRegistry,
 } from '../src/token-registry';
 
@@ -298,12 +299,81 @@ describe('token-registry', () => {
   describe('revokeToken', () => {
     it('revokes existing token', () => {
       const info = createToken({ clientId: 'to-revoke' });
-      expect(revokeToken('to-revoke')).toBe(true);
+      // revokeToken returns the delete count, not a boolean (truthy for callers)
+      expect(revokeToken('to-revoke')).toBe(1);
       expect(validateToken(info.token)).toBeNull();
     });
 
-    it('returns false for non-existent client', () => {
-      expect(revokeToken('no-such-client')).toBe(false);
+    it('returns 0 for non-existent client', () => {
+      expect(revokeToken('no-such-client')).toBe(0);
+    });
+
+    // Regression: revokeToken deleted only the FIRST matching Map entry. The
+    // spent setup key (kept for idempotent re-exchange) is inserted before the
+    // session token, so it shadowed the session: revoke reported success while
+    // the live session survived and DELETE /token returned a false 200.
+    it('revokes the session even when a spent setup key precedes it (shape a)', () => {
+      const setup = createSetupKey({ clientId: 'shadowed' });
+      const session = exchangeSetupKey(setup.token)!;
+      expect(revokeToken('shadowed')).toBe(2);
+      expect(validateToken(session.token)).toBeNull();
+      expect(exchangeSetupKey(setup.token)).toBeNull();
+    });
+
+    // Regression: an UNSPENT setup key created after the session survived the
+    // old first-match revoke, so a "revoked" agent could POST /connect and
+    // mint a brand-new session within the key's 5-minute validity window.
+    it('closes the re-grant hole: unspent setup key dies with the revoke (shape b)', () => {
+      const first = createSetupKey({ clientId: 'regrant' });
+      exchangeSetupKey(first.token);
+      const second = createSetupKey({ clientId: 'regrant' });
+      expect(revokeToken('regrant')).toBe(3);
+      expect(exchangeSetupKey(second.token)).toBeNull();
+      expect(listTokens().filter(t => t.clientId === 'regrant')).toHaveLength(0);
+    });
+
+    it('revokes multiple pending setup keys for one clientId in a single call (shape c)', () => {
+      const keys = [1, 2, 3].map(() => createSetupKey({ clientId: 'multi' }));
+      expect(revokeToken('multi')).toBe(3);
+      for (const k of keys) expect(exchangeSetupKey(k.token)).toBeNull();
+      expect(revokeToken('multi')).toBe(0); // idempotent: second call finds nothing
+    });
+
+    it('does not touch other clients\' tokens', () => {
+      const bystander = createToken({ clientId: 'bystander' });
+      createSetupKey({ clientId: 'target' });
+      createToken({ clientId: 'target' });
+      expect(revokeToken('target')).toBe(2);
+      expect(validateToken(bystander.token)).not.toBeNull();
+    });
+  });
+
+  describe('pair defaults and option validation', () => {
+    it('DEFAULT_PAIR_SCOPES is exactly read,write,admin,meta (b73f3644: the ceremony is the trust boundary)', () => {
+      expect([...DEFAULT_PAIR_SCOPES]).toEqual(['read', 'write', 'admin', 'meta']);
+    });
+
+    // Regression: only createToken validated options, so a scope typo minted
+    // a poisoned setup key at /pair and surfaced to the REMOTE agent at
+    // /connect as a misleading "Invalid request body".
+    it('createSetupKey rejects an unknown scope with InvalidScopeError naming it', () => {
+      expect(() => createSetupKey({ scopes: ['raed' as never] }))
+        .toThrow(InvalidScopeError);
+      expect(() => createSetupKey({ scopes: ['raed' as never] }))
+        .toThrow('Invalid scope: raed');
+    });
+
+    it('createSetupKey rejects a negative rateLimit', () => {
+      expect(() => createSetupKey({ rateLimit: -5 })).toThrow(InvalidScopeError);
+    });
+
+    // Regression: `opts.rateLimit || 10` coerced the documented "0 = unlimited"
+    // into 10 on the /pair path while /token honored it.
+    it('createSetupKey preserves rateLimit 0 (unlimited)', () => {
+      const setup = createSetupKey({ rateLimit: 0 });
+      expect(setup.rateLimit).toBe(0);
+      const session = exchangeSetupKey(setup.token)!;
+      expect(session.rateLimit).toBe(0);
     });
   });
 
@@ -325,6 +395,18 @@ describe('token-registry', () => {
       createToken({ clientId: 'b' });
       createSetupKey({}); // setup keys not listed
       expect(listTokens()).toHaveLength(2);
+    });
+
+    it('includeSetup lists pending setup keys but hides spent ones', () => {
+      createToken({ clientId: 'sess' });
+      createSetupKey({ clientId: 'pending' });
+      const spent = createSetupKey({ clientId: 'spent' });
+      exchangeSetupKey(spent.token);
+      expect(listTokens().map(t => t.clientId).sort()).toEqual(['sess', 'spent']);
+      const withSetup = listTokens({ includeSetup: true });
+      // Pending key = a live grant the operator must see; the SPENT key is
+      // re-exchange bookkeeping for the already-listed session and stays hidden.
+      expect(withSetup.filter(t => t.type === 'setup').map(t => t.clientId)).toEqual(['pending']);
     });
   });
 

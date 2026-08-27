@@ -47,43 +47,85 @@ wave"). Each was explicitly deferred with rationale, not dropped:
 
 ### P2: v1.67 adversarial-review residuals (verified, deferred with rationale)
 
-Filed at v1.67 ship time from the Codex + Claude adversarial passes. Each was
-verified real but needs design input or device access the wave lacked:
+Filed at v1.67 ship time from the Codex + Claude adversarial passes. Six of
+the seven landed in the v1.68 fix wave (brain-sync spool-dir queue, pair-agent
+consent gate, bin-context walk-up parity, per-project MCP scoping +
+precedence flip, next-version ls-remote fallback + width pin, stop-hook
+global-path registration + re-point). Remaining:
 
-- **brain-sync enqueue lock** — the drain's surgical rewrite closes the reader
-  side, but a lockless producer appending between the live re-read and the
-  tmp+mv can still orphan one record. Needs a shared enqueue/drain lock
-  (mkdir-style, like the drain's). Effort S.
 - **iOS tap routing across windows** — Bridges template's frontmostWindow can
   swallow taps when a keyboard/menu/transparent overlay window is topmost but
   doesn't handle the coordinate. Needs hit-test-aware routing + real-device
   verification. Effort M. (Related: the multi-window rewrite has no static
   pins — see the test-gap backlog below.)
-- **pair-agent implicit --force-restart** — pair-agent auto-kills a healthy
-  headless daemon (tabs/cookies) with no consent, contradicting the #2219
-  iron rule it now sits beside. Needs a consent prompt or explicit-flag
-  requirement; UX call. Effort S.
-- **bin-context slugFromEnvironment walk-up parity (win32)** — the native
-  fallback slugs the INNERMOST repo while bash gstack-slug walks to the
-  outermost canonical remote; nested/vendored repos split stores. Effort S.
-- **hasRemoteOnlyGbrainMcp is machine-global** — one project's remote gbrain
-  registration reclassifies broken local engines as thin-client everywhere;
-  also confirm Claude Code's user-vs-project MCP precedence against
-  brain-cache's user-first assumption. Effort S.
-- **next-version git-fallback breadth** — the degraded path counts every
-  remote-tracking ref on every remote (stale experiment branches inflate the
-  allocation) and a failed 3-digit base read flips width to 4. Warned today;
-  tighten to origin + width-pin. Effort S.
-- **Stop-hook registration pins the setup-time absolute path** — registering
-  from a dev worktree bakes that path into settings.json; deleting the
-  worktree leaves a dead hook erroring on every session stop until removed.
-  Register the global-install path or re-point on upgrade. Effort S.
+- **setup:1601 CLAUDE_CONFIG_DIR alignment** — the skills installer hardcodes
+  `$HOME/.claude/skills` while settings.json and hook registration honor
+  `CLAUDE_CONFIG_DIR`; users with the override get a split-brain install.
+  Mitigated in v1.68.1 (canonical-root fallback to the home path so hooks
+  still register), but the installer itself should honor the override.
+  **Priority:** P3. Effort S.
+- **Centralize plan_tune_hooks bool parsing + gstack-config key validation** —
+  the `n|no|false|skip|off|0` negative-value set is triplicated
+  (gstack-settings-hook prune-stale, setup heal note, setup PT_DECISION) and
+  gstack-config carries three verbatim copies of the key-validation block
+  (get/has/set). Extract a `gstack-config` bool helper + `validate_key()`;
+  update the locale pin test. Filed via /ship review army (maintainability).
+  **Priority:** P3. Effort S.
 - **Accepted threat-model notes (documented, no action planned):**
   redact-prepush treats content pushed to ANY private remote as already-left
   (accident-only threat model); a parcel-shaped twin within 400 chars can
   suppress phone redaction (WARN-tier pattern, attacker-influence accepted);
   codex-probe's 400-signature grep can misread a transient proxy 400 as
   MODEL_UNUSABLE (bounded by the 15-min negative-cache TTL).
+
+### P2: skillify structural isolation (filed from the v1.68 wave reviews)
+
+**What:** /skillify turns scraped page content into durable executable skill
+code on disk. The v1.68 wave added the untrusted-content warning to its prose
+(#2441), but a warning is not a boundary — generated actions derived from
+hostile page content need structural isolation, sanitization of synthesized
+selectors/names, or an explicit approval step scoped to the generated code.
+
+**Why:** A poisoned page could steer the generated script.ts toward actions
+the user never reviewed; the current gate is the Step 9 approval, which shows
+the code but doesn't highlight page-derived strings.
+
+**Effort:** M → S with CC. **Priority:** P2. **Depends on:** none.
+
+### P2: slug store migration — merge pre-fix `projects/garrytan/` data (v1.68 follow-up)
+
+**What:** The v1.68 slug-parity fix (gstack-slug now matches remote-slug's
+owner-repo form) means machines that hit the degraded-slug bug (stray strong
+marker above a repo, e.g. an empty ~/.git) have historical decisions /
+timeline / ceo-plans / learnings filed under the marker-basename store
+(observed: `~/.gstack/projects/garrytan/`) instead of per-repo stores. Define
+and ship the merge/alias: attribute each misfiled record to its repo where
+derivable (timeline entries carry branch; decisions carry scope), else leave
+in place with a pointer file.
+
+**Why:** Post-fix sessions read the CORRECT store, so pre-fix history is
+invisible to Context Recovery until migrated.
+
+**Effort:** M → S with CC. **Priority:** P2. **Depends on:** the v1.68 wave
+(shipped the fix + parity tests).
+
+### P3: gstack-slug degraded-heal probe cost on cache hits (v1.68 review-army finding)
+
+**What:** The v1.68 cache self-heal probes `_resolve_remote` (1-3 git forks) on
+EVERY cache hit whenever the cached slug equals the marker-root basename — the
+permanent steady state for remoteless and legit-sticky projects, on the
+per-preamble hot path. Add a single-shot sentinel per cache entry so the heal
+probe runs once, not forever.
+
+**Why:** "Cache hits stay git-spawn-free" only holds for owner-repo slugs
+today. Cost is bounded (1-3 forks) but paid at every skill start on affected
+projects. Also next-touch notes from the same review: extract a makeResult
+helper for BulkResult's 11 hand-copied literals in bin/gstack-memory-ingest.ts;
+dedup the brain-worktree default-path literal between bin/gstack-brain-sync and
+bin/gstack-gbrain-source-wireup.
+
+**Effort:** S. **Priority:** P3. **Depends on:** cache-format compatibility
+(sentinel must not break older readers).
 
 ### P2: v1.67 coverage-audit test-gap backlog (5-agent sweep, ranked)
 
@@ -2741,6 +2783,21 @@ needs one paid run to validate, so it didn't ride the ship.
 **Effort:** S (human ~2h, CC ~15min + one paid run).
 
 ## Completed
+
+### ✅ DONE (v1.68.1.0): Stop-hook registration pins the setup-time absolute path
+
+**Priority:** P1 (was filed Effort S, scoped to the Stop hook — shipped as the full defect class)
+
+**What:** Registering hooks from a dev worktree baked that worktree's physical
+path into global settings.json; deleting the worktree left dead hooks erroring
+on every AskUserQuestion/session stop. Fixed for ALL gstack hooks, not just
+Stop: canonical-only registration via `_hook_command_path`, a KNOWN_HOOKS
+identity table in `gstack-settings-hook` (survives Claude Code stripping
+`_gstack_source` tags), a `prune-stale [--repoint|--all]` self-healer that
+runs heal-first on every `./setup`, per-item mutation safety, a mutation lock,
+fail-closed parse, and complete uninstall/no-team teardown.
+
+**Completed:** v1.68.1.0 (2026-08-18)
 
 ### ✅ DONE (v1.66.0.0): Free suite exit code is untrustworthy — in-process force-exits mask failures
 
