@@ -1,4 +1,4 @@
-## gstuck (based on upstream v1.67.2.0, sanitized 2026-08-26)
+## gstuck (based on upstream v1.68.2.0, sanitized 2026-08-27)
 
 ### Removed
 - Supabase telemetry system (all phone-home calls to frugpmstpnojnhfyimgv.supabase.co)
@@ -18,6 +18,234 @@
 ---
 
 # Changelog
+
+## [1.68.2.0] - 2026-08-20
+
+**Revoking a paired agent now revokes everything it holds, and the**
+**documented kill switch is real: tunnel revoke deletes, then proves it.**
+
+Revoking a remote agent was broken twice over. `revokeToken` deleted only the first token matching the agent's name, and the spent setup key kept for connection retries always sat first in line. So `DELETE /token/<agent>` returned 200 while the live session kept working, a leftover unspent setup key could mint a brand-new session for a "revoked" agent (inside the key's 5-minute validity), and a second DELETE returned 200 again. Meanwhile the documented way out, `$B tunnel revoke`, did not exist: the CLI forwarded it to the daemon as an unknown command. The pairing docs also promised a read+write sandbox three releases after pairing deliberately switched to full page access.
+
+### The numbers that matter
+
+Source: the before/after curl transcript in the PR (a `BROWSE_HEADLESS_SKIP=1` daemon on each branch) and the regression tests in `browse/test/token-registry.test.ts` and `browse/test/tunnel-revoke-cli.test.ts`, which fail on the previous release.
+
+| Metric | Before | After |
+|--------|--------|-------|
+| DELETE /token with a pending setup key | 200, session survives | 200, all 3 tokens deleted |
+| Revoked agent re-connects via leftover key | new session minted | 401 |
+| `$B tunnel revoke <name>` | Unknown command 'tunnel' | revokes, then verifies against /agents |
+| Second DELETE for the same agent | 200 again | 404 |
+| Bare `--restrict` (forgotten value) | silent FULL access | hard error, exit 1 |
+| Docs on default pairing scopes | "read+write, no JS" | read+write+admin+meta, stated plainly |
+
+### What this means for you
+
+Revoke means revoked: one command deletes the session and every setup key, prints the count, and re-reads the agent list to prove the agent is gone. `$B tunnel agents` shows everyone paired, pending setup keys included. The pairing docs now tell the truth about default access, when to reach for `--restrict` (agents reading untrusted pages), and that `$B stop` clears every token at once. Scope typos fail at `/pair` naming the bad scope instead of surfacing to the remote agent as a body error, and a scopes list can no longer smuggle in the `control` scope.
+
+### Itemized changes
+
+### Added
+- `tunnel revoke <name>` and `tunnel agents` CLI subcommands: pre-server (never boot a daemon to revoke against it), post-revoke verification re-read, truthful exit codes for unknown names, unreachable daemons, and old daemons that claim success while the agent stays listed.
+- `GET /agents` lists pending (unexchanged) setup keys, marked `pending`; setup-key tokens never leave the server. `DELETE /token` responses carry `tokens_deleted` and the daemon logs the count.
+
+### Changed
+- The CLI always sends an explicit scopes list; both CLI and server reference one exported `DEFAULT_PAIR_SCOPES` constant, pinned by a source tripwire so the defaults cannot drift apart again.
+- The scope-denied 403 hint recommends re-pairing without `--restrict` or with `--control`; it no longer suggests `--admin`, which over-granted browser control.
+- pair-agent/SKILL.md, REMOTE_BROWSER_ACCESS.md, and ARCHITECTURE.md document the real default, `--restrict`, and the tunnel allowlist nuance (`eval` works remotely; `js`/`cookies`/`storage` are local-only). The never-implemented `tunnel rotate` is replaced by `$B stop`, and the phantom `/sidebar-chat` tunnel entries are gone.
+
+### Fixed
+- `revokeToken` deletes ALL tokens for a client id: the session plus spent and pending setup keys. Closes the false-200 revoke and the re-grant hole.
+- Bare `--restrict` (or `--restrict` swallowing the next flag) errors out instead of silently granting full access; `--restrict` can never grant `control`.
+- Scope and rateLimit typos are rejected at `/pair` and `/token` with the field named; `rateLimit: 0` (unlimited) survives the /pair path.
+- `DELETE /token/:id` decodes percent-encoded client ids, so names with spaces round-trip from the CLI.
+
+### For contributors
+- 35 new test cases: revoke-all regression shapes, a subprocess CLI harness with stub daemons pinning the version-skew net ("Revocation incomplete" on a lying daemon) and every CLI error branch, e2e scope-contract and 403-hint pins, and code-shape tripwires for `DEFAULT_PAIR_SCOPES` and the decode path.
+
+## [1.68.1.0] - 2026-08-18
+
+**Phantom hook errors are dead. Your settings.json now heals itself**
+**on every setup, and no ephemeral path can ever be baked in again.**
+
+If you work in Conductor workspaces or git worktrees, you have probably seen it: `PostToolUse:AskUserQuestion hook error ... No such file or directory` spraying on every question, pointing at a workspace you deleted last week. The cause was a three-part failure. Setup baked the running tree's physical path into your global `~/.claude/settings.json`, the Conductor auto-opt-in overrode the exact flag `bin/dev-setup` passes to prevent that, and the dedupe tag gstack relied on gets stripped by Claude Code itself, so every new workspace appended a fresh dead entry instead of replacing the old one.
+
+All three are fixed at the root. Hook registration is now canonical-only: commands point at the stable `~/.claude/skills/gstack` install or are not registered at all. Ownership is decided by a fixed identity table in `bin/gstack-settings-hook`, per hook item, so it survives tag-stripping and can never claim a hook you wrote yourself. And every `./setup` run now heals first: `gstack-settings-hook prune-stale --repoint` removes dead gstack entries, re-points stale ones, restores stripped tags, and collapses duplicates, printing one line only when it changed something.
+
+### The numbers that matter
+
+Source: the 2026-08-17 incident on a real dev box, replayed byte-for-byte as the `incident facsimile` test in `test/gstack-settings-hook-schema-aware.test.ts`.
+
+| Metric | Before | After | Δ |
+|--------|--------|-------|---|
+| Hook entries in settings.json | 11 (6 dead) | 5, all canonical | −6 dead |
+| Error lines per AskUserQuestion | 4 | 0 | −4 |
+| Hook processes spawned per question that do nothing | 4 | 0 | −4 |
+| Traced code paths under test | — | 53 of 61 (87%) | new |
+
+The healer also fixes damage you could not see: a corrupt settings.json is never overwritten (every mutator now fails closed instead of clobbering it with `{}`), a user-tightened 0600 file keeps its mode across rewrites (settings.json can carry API keys), concurrent setups can no longer rename a half-written temp file into place, and uninstall now cleans hooks BEFORE deleting the install root, which previously made cleanup silently no-op in exactly the case it existed for.
+
+### What this means for you
+
+Run `./setup` (or `/gstack-upgrade`) once and the errors stop, on every machine, with a printed receipt of what was healed and a backup beside the file. New workspaces can never reintroduce them. If you ever want everything gone, `gstack-uninstall` now actually removes every gstack hook, including the ones an older version orphaned.
+
+### Itemized changes
+
+### Added
+- `gstack-settings-hook prune-stale [--repoint <root>] [--all]`: self-healing for hook registrations. Dead gstack entries pruned, stale paths re-pointed at the stable install, stripped `_gstack_source` tags restored from the identity table, exact duplicates and within-entry twins collapsed. Runs automatically at the start of every `./setup`; `--all` is the complete teardown sweep used by uninstall and `--no-team`.
+- `gstack-config has <key>`: key-presence check through the same state-dir resolution as `get` (which returns defaults for absent keys), so consent logic can tell a recorded decision from a default.
+- KNOWN_HOOKS identity table covering all six gstack hooks (plan-tune trio, timeline Stop, session update, verify-gate), shared by registration dedupe and the healer so the two can never drift.
+- A mutation lock around every settings.json write: mkdir-based with an owner token, ownership-checked release, and atomic stale-lock takeover. Backups get unique names and rotate (10 kept); `rollback` validates its pointer and restores atomically.
+
+### Changed
+- Hook registration is canonical-only. Setup never writes a running-tree path into global settings; if the stable install is missing a hook, it skips with a visible log line instead. The Conductor auto-opt-in for AskUserQuestion reliability hooks now respects explicit decisions (flag, env, or a recorded config key) and fires only on the true silent fall-through.
+- `add-event` is the single quoting authority: registered commands are normalized once (whitespace and shell metacharacters escaped), so a spaced or `$`-bearing install path produces a working hook from the first registration. Windows gets the required `bash ` prefix on all hooks, not just SessionStart, and MSYS-form paths no longer read as dead to the healer.
+- All settings.json mutators are per-item: a hook you co-located in the same entry as a gstack hook survives every gstack operation, including uninstall, and gstack never tags an entry that contains your items.
+- Teardown paths (`gstack-uninstall`, `./setup --no-team`) run hook cleanup before any deletion, sweep untagged strays by identity, and keep stderr attached so a skipped cleanup is loud, never silent.
+
+### Fixed
+- Deleted Conductor workspaces and worktrees no longer leave dead hooks erroring on every AskUserQuestion, session start, and stop event.
+- A corrupt settings.json is preserved and reported (exit 3) instead of being replaced with an empty object by the next hook operation.
+- settings.json file mode is preserved across rewrites; fresh files are created 0600.
+- Liveness checks treat only provable absence as dead, so an unmounted volume or permission blip cannot prune a working hook.
+- A vacuous test in the banner-tripwire check executed its script through JSON-as-shell-quoting, silently littering a `2nelsen` artifact in the repo root on every suite run while asserting nothing; it now passes the script as argv and asserts both branches.
+
+### For contributors
+- 60+ new or updated test cases across 8 files, including the incident facsimile, a two-writer concurrency smoke, an uninstall test that runs the installed copy from inside the root it deletes, held-lock teardown visibility, quoting round-trips, and static tripwires pinning canonical-only registration, heal-first ordering, matcher-literal parity, and the shared-prelude call sites.
+- The review pipeline for this release (five specialists plus red team plus two Codex passes) contributed 14 verified hardening fixes; rejected findings are documented in the PR.
+
+## [1.68.0.0] - 2026-08-18
+
+**The next tracker wave: 16 verified fixes in, 90 stale PRs and 21 issues out.**
+**Six community contributors credited, one queue race killed for good.**
+
+This release lands the full next-wave queue: six community PRs ported with
+authorship intact, ten fixes of our own, and the six adversarial-review
+residuals the last wave deferred. The headline internals: the brain-sync
+queue moved to a per-record spool directory, so the enqueue/drain race class
+is structurally gone, not narrowed. The session-update lock records the
+process that actually holds it, heartbeats while it works, and expires on a
+hard TTL, so concurrent updaters can no longer trample a live install. And a
+live bug caught during this wave's own review, a stray `~/.git` directory
+silently misfiling decisions and learnings into the wrong project store, is
+fixed with a self-healing cache and a ten-case parity suite.
+
+### The numbers that matter
+
+Source: this branch vs main (`git diff main...HEAD --stat`), the wave's
+coverage audit, and the tracker close-out run on 2026-08-17.
+
+| Metric | Value |
+|---|---|
+| Fixes landed (issues closed by this release) | 16 |
+| Community PRs ported with credit | 6 (6 contributors) |
+| Open PRs closed with receipts | 90 |
+| Stale issues closed with version pointers | 21 |
+| Diff | 133 files, +6,276 / −649 |
+| New/extended test files | 31 (coverage audit: 96% of changed surfaces at behavior+edge+error depth) |
+| Review rounds absorbed pre-merge | 3 (specialist army, then two cross-model adversarial passes) |
+
+The tracker numbers are the striking ones: 111 stale items left the queue in
+one day, each with a receipt naming the release that covered it. Contributors
+whose fixes were absorbed months ago now have closure with credit instead of
+an open PR going quiet.
+
+### What this means for you
+
+If a skill ever told you the brain queue was empty while records sat in it,
+or `--probe` promised thousands of pages that `--bulk` then refused, or a
+second Claude session stomped your gstack update mid-pull, those classes are
+closed and each one is pinned by a regression test. Update with
+`/gstack-upgrade`, which itself now fast-forwards first and never discards
+unpushed work without telling you exactly what it would delete.
+
+### Itemized changes
+
+#### Added
+- `/scrape` and `/skillify` now carry the untrusted-content processing rules,
+  single-sourced with the browse reference so the wording can never drift.
+  Re-derived from PR #2612. Contributed by @Lockyer228 (#2441).
+- `$B cdp` allows `Emulation.setCPUThrottlingRate` and
+  `Network.emulateNetworkConditions` for real perf measurement on simulated
+  low-end clients. Overrides persist until cleared; the justifications say so.
+  Contributed by @henbima (#2602).
+- Transcript ingest honors the per-remote trust store: `deny` and `read-only`
+  remotes are skipped with per-tier counts, a corrupted store aborts before
+  any write, and the policy lookup is one batched subprocess for the whole
+  corpus (#2392).
+- The gbrain source worktree advances on the daily sync, so brains stop
+  serving stale pages between setups. The unattended path refuses dirty
+  worktrees and never force-removes (#2516).
+- `gstack-gbrain-repo-policy get --batch`: one spawn classifies every remote.
+
+#### Changed
+- **Behavior change:** `gstack-config get <unknown-key>` now exits 1 with
+  empty output, so `|| echo fallback` callers finally fire. Keys whose empty
+  value is meaningful (`cross_project_learnings`, `salience_allowlist`,
+  `user_slug_at_*`, `redact_repo_visibility`, `repo_mode`) still return empty
+  with exit 0. Scripts that relied on unknown keys silently returning empty
+  with exit 0 must add a fallback. Contributed by @benjaminberes-bp (#2611).
+- The brain-sync queue is a maildir-style spool (`.brain-queue.d/`, one file
+  per record, atomic rename). Writer and drainer never share an inode; the
+  drain deletes only records classification proves were staged or dropped,
+  so a classifier crash or a malformed pulled privacy map retains everything
+  instead of discarding it. Legacy queues migrate on the next drain.
+- `--probe` in memory-ingest counts through the same attribution and policy
+  gates as `--bulk`, with a bounded 256KB read per transcript, so its numbers
+  are the numbers. Re-derived from PR #2612. Contributed by @Lockyer228 (#2394).
+- `/gstack-upgrade` fast-forwards with autostash first; the destructive
+  fallback runs only on a provably-clean tree with no unpushed commits, or
+  after an explicit confirmation listing exactly what would be discarded (#2517).
+- Skill completion always reviews the session for durable learnings and says
+  so explicitly when there are none. Re-derived from PR #2612. Contributed by
+  @Lockyer228 (#2402).
+- `/codex` documents the measured session-overhead reality: resume does not
+  amortize the prelude, so prefer one call per skill (#2387).
+- MCP scope resolution is project-first everywhere, matching Claude Code's
+  verified precedence, and one project's remote gbrain registration no longer
+  reclassifies every other project on the machine.
+
+#### Fixed
+- plan-tune refuses `never-ask` on one-way question ids at write time and
+  reports previously-stored inert preferences in `--stats`. Contributed by
+  @szsunyuan (#2488).
+- A typo'd `gstack-redact` subcommand exits 1 with usage instead of silently
+  scanning stdin (or hanging on a terminal). Contributed by @kinoko-studio.
+- One ambiguous ref no longer kills the whole annotated screenshot: exact
+  matches stay exact, ambiguous refs fall back to first-match and are counted
+  visibly in the output. Contributed by @namtrok.
+- `gstack-version-bump repair` refuses to write a fabricated `0.0.0.0` into
+  package.json when VERSION is missing or empty, while a genuine `0.0.0.0`
+  file still repairs. Re-derived from PR #2612. Contributed by @Lockyer228 (#2600).
+- The session-update lock records the live holder (not the exited parent),
+  heartbeats during long pulls and setups, expires on a hard TTL so a
+  recycled PID cannot wedge it, and reclaims atomically with an
+  ownership-checked cleanup (#2613).
+- `gstack-slug` resolves the canonical owner-repo slug even when a stray
+  marker directory sits above the repo; the poisoned-cache shape self-heals,
+  legitimate sticky identities are preserved, and the native Windows fallback
+  agrees with the shell implementation on every pinned fixture.
+- `/review` checklist paths resolve from the installed skill root, so review
+  runs work in every target repo, not just gstack's own checkout (#2518).
+- next-version's offline fallback queries live remote refs without mutating
+  local state, fetches unreadable claims before giving up, and never silently
+  reissues a sibling branch's version.
+- Setup-registered hooks prefer the global install path and re-point stale
+  absolute paths on re-run; duplicate registrations collapse to one; a
+  corrupt settings.json is refused loudly instead of being replaced.
+- Windows: every `Bun.spawn` in browse carries `windowsHide` with a census
+  tripwire, and project-scoped brains resolve on backslash paths.
+
+#### For contributors
+- 90 absorbed or superseded PRs and 21 fixed issues were closed with receipt
+  comments pointing at the releases that covered them; ported PRs close with
+  porting-commit receipts when this release merges.
+- The parity-suite skeleton ceilings absorbed this wave's preamble growth
+  with measured notes; the referenced-path scanner self-check re-anchored to
+  the installed-root form.
+- New follow-ups filed in TODOS.md: skillify structural isolation, slug store
+  migration for pre-fix data, deny retroactivity for already-ingested pages,
+  and the slug heal-probe cache sentinel.
 
 ## [1.67.2.0] - 2026-08-18
 
