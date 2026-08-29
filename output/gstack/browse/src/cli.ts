@@ -1225,6 +1225,14 @@ async function tunnelAgents(): Promise<number> {
  * opposite of the user's intent. And `control` never rides in via --restrict:
  * browser-wide destructive ops stay behind the explicit --control flag. */
 function validatePairAgentFlags(args: string[]): void {
+  // `root` is the sentinel that bypasses all scope/domain/rate/tab enforcement;
+  // naming an agent that way would silently un-sandbox it. Reject client-side
+  // before hitting the daemon (the server rejects it too).
+  const client = parseFlag(args, '--client');
+  if (client && client.trim().toLowerCase() === 'root') {
+    console.error("[browse] --client 'root' is reserved — it would bypass all scope enforcement. Choose another name.");
+    process.exit(1);
+  }
   // hasFlag/parseFlag are exact-token matches, so `--restrict=read` would
   // sail past every check below and silently grant FULL access.
   if (args.some(a => a.startsWith('--restrict='))) {
@@ -1305,7 +1313,20 @@ async function handlePairAgent(state: ServerState, args: string[]): Promise<void
     scopes: string[];
     tunnel_url: string | null;
     server_url: string;
+    superseded?: { tokens_deleted: number; tabs_released: number };
   };
+
+  // Version-skew safe: only speak when the daemon actually superseded a live
+  // session (old daemons omit the field, so a new CLI never claims a false one).
+  if (pairData.superseded && pairData.superseded.tokens_deleted > 0) {
+    console.log(`[browse] Superseded the previous session for "${clientName}" (${pairData.superseded.tokens_deleted} token(s), ${pairData.superseded.tabs_released} tab(s) released). The agent must reconnect with the new key.`);
+  }
+  // A re-pair narrows/changes an EXISTING agent only when it reuses that agent's
+  // --client name. Without one, this mints a brand-new agent and the old grant
+  // lives on — warn when the intent looks like a re-pair.
+  if (!parseFlag(args, '--client') && (restrict || domains)) {
+    console.warn(`[browse] No --client given: this pairs a NEW agent and does NOT narrow an existing one. To change an agent's access, re-pair with its --client name (see 'browse tunnel agents').`);
+  }
 
   // Determine the URL to use
   let serverUrl: string;

@@ -291,6 +291,135 @@ describe('pair-agent flow end-to-end (HTTP only, no ngrok)', () => {
     expect(body.hint).not.toContain('--admin');
   });
 
+  // ─── D2: reserved clientId is rejected with a named 400 ───────────────
+
+  test('POST /pair with clientId "root" returns 400 naming the reservation', async () => {
+    const resp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'root' }),
+    });
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as any;
+    // The reservation is named, NOT hidden behind the generic "Invalid request body".
+    expect(body.error).toContain('root');
+    expect(body.error).not.toBe('Invalid request body');
+  });
+
+  test('POST /token with clientId "root" returns 400 naming the reservation', async () => {
+    const resp = await fetch(`${daemon.baseUrl}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'root' }),
+    });
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as any;
+    expect(body.error).toContain('root');
+    expect(body.error).not.toBe('Invalid request body');
+  });
+
+  // ─── D1: a reducing re-pair supersedes the prior grant immediately ────
+
+  const pairAs = async (body: any) => (await (await fetch(`${daemon.baseUrl}/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+    body: JSON.stringify(body),
+  })).json()) as any;
+  const connectKey = async (setup_key: string) => {
+    const r = await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ setup_key }),
+    });
+    return { status: r.status, body: await r.json().catch(() => ({})) as any };
+  };
+  const statusWith = (token: string) => fetch(`${daemon.baseUrl}/command`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ command: 'status', args: [] }),
+  });
+
+  test('reducing re-pair revokes the prior session immediately, without exchanging the new key', async () => {
+    const { setup_key: k1 } = await pairAs({ clientId: 'reduce-me' });      // broad
+    const { body: c1 } = await connectKey(k1);
+    const s1 = c1.token as string;
+    expect((await statusWith(s1)).status).not.toBe(401);                    // works
+    // Narrow WITHOUT exchanging the new key — this is the whole bug.
+    const rp = await pairAs({ clientId: 'reduce-me', scopes: ['read'] });
+    expect(rp.superseded?.tokens_deleted).toBeGreaterThanOrEqual(1);
+    expect((await statusWith(s1)).status).toBe(401);                        // old session revoked
+    // The new narrow key still works and yields the reduced scope.
+    const c2 = await connectKey(rp.setup_key);
+    expect(c2.status).toBe(200);
+    expect(c2.body.scopes).toEqual(['read']);
+    expect((await statusWith(c2.body.token)).status).not.toBe(401);
+  });
+
+  test('reducing re-pair BEFORE connect kills the stale broad setup key; only the narrow key works', async () => {
+    const { setup_key: broad } = await pairAs({ clientId: 'shadow' });      // never connected
+    const rp = await pairAs({ clientId: 'shadow', scopes: ['read'] });      // narrowing re-pair
+    expect(rp.superseded).toBeUndefined();                                  // no live session existed
+    expect((await connectKey(broad)).status).toBe(401);                     // stale broad key dead
+    const c = await connectKey(rp.setup_key);
+    expect(c.status).toBe(200);
+    expect(c.body.scopes).toEqual(['read']);                               // narrow key survives
+  });
+
+  test('broadening re-pair does NOT revoke the working session (no outage)', async () => {
+    const first = await pairAs({ clientId: 'broaden', scopes: ['read'] });
+    expect(first.superseded).toBeUndefined();                              // first pair supersedes nothing
+    const { body: c } = await connectKey(first.setup_key);
+    const s = c.token as string;
+    expect((await statusWith(s)).status).not.toBe(401);
+    const rp = await pairAs({ clientId: 'broaden', scopes: ['read', 'write'] }); // broaden
+    expect(rp.superseded).toBeUndefined();                                 // session not superseded
+    expect((await statusWith(s)).status).not.toBe(401);                    // still working
+  });
+
+  test('a reducing re-pair with an INVALID scope 400s and leaves the live session intact', async () => {
+    // Regression: the supersede revoke must run AFTER validation. A scope typo
+    // (--restrict red) on a narrowing re-pair must not destroy the session and
+    // then fail to mint a replacement — the agent would be knocked offline.
+    const { setup_key: k } = await pairAs({ clientId: 'validate-me' });
+    const { body: c } = await connectKey(k);
+    const s = c.token as string;
+    expect((await statusWith(s)).status).not.toBe(401);
+    const resp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'validate-me', scopes: ['red'] }),
+    });
+    expect(resp.status).toBe(400);
+    expect((await resp.json() as any).error).toContain('red');
+    // The working session survives the validation error (not revoked).
+    expect((await statusWith(s)).status).not.toBe(401);
+  });
+
+  // ─── D3: DELETE /token releases tabs unconditionally; 404 only when empty ─
+
+  test('DELETE /token returns tabs_released and 404 only when nothing to revoke or release', async () => {
+    const pairResp = await fetch(`${daemon.baseUrl}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` },
+      body: JSON.stringify({ clientId: 'd3-agent' }),
+    });
+    const { setup_key } = await pairResp.json() as any;
+    await fetch(`${daemon.baseUrl}/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setup_key }),
+    });
+    const del = await fetch(`${daemon.baseUrl}/token/d3-agent`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${daemon.token}` },
+    });
+    expect(del.status).toBe(200);
+    const body = await del.json() as any;
+    expect(body.tokens_deleted).toBeGreaterThanOrEqual(1);
+    // Headless-skip daemon owns no real tabs, but the field is always present.
+    expect(body.tabs_released).toBe(0);
+    // Nothing to revoke AND nothing to release → 404.
+    const del2 = await fetch(`${daemon.baseUrl}/token/nonexistent-xyz`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${daemon.token}` },
+    });
+    expect(del2.status).toBe(404);
+  });
+
   // ─── Revocation e2e: revoke-all + the /agents verification surface ────
 
   test('DELETE /token revokes session AND setup keys; agent leaves /agents; token 401s; re-connect fails', async () => {
