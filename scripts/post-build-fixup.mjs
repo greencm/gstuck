@@ -144,6 +144,37 @@ if (telPatFixed > 0) {
 // Bin scripts (no extension) are not covered by the .md/.tmpl sweep above.
 // gstack-codex-probe v1.42+ introduces _gstack_codex_log_event() which
 // writes to ~/.gstack/analytics/skill-usage.jsonl — strip the write path.
+//
+// gstack-skill-start/gstack-skill-end (v1.69+) also spawn gstack-telemetry-log
+// directly, guarded by `[ -x "$_BIN/gstack-telemetry-log" ]`. The binary itself
+// is already neutralized to a no-op by sanitize.sh before this runs, but the
+// call sites are stripped too (defense in depth). Line-based instead of a
+// single regex because the call can span multiple backslash-continued lines,
+// and naively deleting just the matching line would leave orphaned argument
+// fragments or an unmatched `fi` behind.
+function stripTelemetryLogCalls(src) {
+  const lines = src.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/\bgstack-telemetry-log\b/.test(line)) {
+      const ifIndent = line.match(/^([ \t]*)if\b/);
+      if (ifIndent) {
+        // Guarding if-block: drop through the matching `fi` at the same indent.
+        const closer = `${ifIndent[1]}fi`;
+        i++;
+        while (i < lines.length && lines[i] !== closer) i++;
+      } else {
+        // Bare call: drop this line and any backslash-continuation lines.
+        while (/\\$/.test(lines[i]) && i + 1 < lines.length) i++;
+      }
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 const binDir = join(ROOT, 'bin');
 if (existsSync(binDir)) {
   let binFixed = 0;
@@ -154,6 +185,12 @@ if (existsSync(binDir)) {
     const before = src;
     src = src.replace(/^.*(?:~\/|(?:\$HOME\/)?)\.gstack\/analytics.*\n?/gm, '');
     src = src.replace(/^.*skill-usage\.jsonl.*\n?/gm, '');
+    src = stripTelemetryLogCalls(src);
+    // The two line-strips above can leave a guard if-block with nothing left
+    // in its body (e.g. `if [ "$_TEL" != "off" ]; then\nfi`) — `then` directly
+    // followed by `fi` is a bash syntax error, not a harmless no-op. Drop the
+    // now-empty block entirely.
+    src = src.replace(/^([ \t]*)if\b[^\n]*; then\n\1fi\n?/gm, '');
     if (src !== before) {
       writeFileSync(f, src);
       binFixed++;
