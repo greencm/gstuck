@@ -72,6 +72,7 @@ lookup_default() {
     artifacts_sync_mode) echo "off" ;;
     artifacts_sync_mode_prompted) echo "false" ;;
     plan_tune_hooks) echo "prompt" ;; # prompt | yes | no — controls ./setup plan-tune hook install
+    timeline_stop_hook) echo "yes" ;; # yes | no — controls ./setup timeline Stop hook registration (#2677)
 
     redact_repo_visibility) echo "" ;; # empty → fall through to gh/glab detection
     redact_prepush_hook) echo "false" ;;
@@ -117,8 +118,16 @@ lookup_default() {
 # ──────────────────────────────────────────────────────────────────────
 
 # Compute sha8 of a string. Used for endpoint hashing.
+# shasum is macOS/perl; most Linux distros ship only coreutils sha256sum —
+# resolve whichever exists (same fallback chain as the codex-probe timeout
+# wrapper). Without this, any Linux user with a git email hit exit 127 in
+# resolve-user-slug's Layer-3 fallback.
 sha8_of() {
-  printf '%s' "$1" | shasum -a 256 | cut -c1-8
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-8
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -c1-8
+  fi
 }
 
 # Detect the active brain endpoint hash. Reads ~/.claude.json for the gbrain
@@ -152,7 +161,11 @@ endpoint_hash_with_collision_check() {
   _claude_json="$HOME/.claude.json"
   if [ -n "$_matching" ] && [ -f "$_claude_json" ] && command -v jq >/dev/null 2>&1; then
     _url=$(jq -r '.mcpServers.gbrain.url // .mcpServers.gbrain.transport.url // empty' "$_claude_json" 2>/dev/null)
-    _sha16=$(printf '%s' "$_url" | shasum -a 256 | cut -c1-16)
+    if command -v sha256sum >/dev/null 2>&1; then
+      _sha16=$(printf '%s' "$_url" | sha256sum | cut -c1-16)
+    else
+      _sha16=$(printf '%s' "$_url" | shasum -a 256 | cut -c1-16)
+    fi
     # Look for any sha16-namespaced key that conflicts. If a stored sha16 exists
     # and differs from current sha16, that's the collision evidence; emit sha16.
     _stored16=$(grep -E "^(brain_trust_policy|user_slug_at)@${_sha16}" "$CONFIG_FILE" 2>/dev/null | head -1 || true)
@@ -308,11 +321,23 @@ case "${1:-}" in
       echo "Warning: plan_tune_hooks '$VALUE' not recognized. Valid values: prompt, yes, no. Using prompt." >&2
       VALUE="prompt"
     fi
+    if [ "$KEY" = "timeline_stop_hook" ] && [ "$VALUE" != "yes" ] && [ "$VALUE" != "no" ]; then
+      echo "Warning: timeline_stop_hook '$VALUE' not recognized. Valid values: yes, no. Using yes." >&2
+      VALUE="yes"
+    fi
     # codex_reviews controls PAID Codex calls. Unlike the warn-and-default keys above,
     # an invalid value is REJECTED and the existing setting is left unchanged — a typo
     # must never silently flip the switch and turn paid Codex calls on or off.
     if [ "$KEY" = "codex_reviews" ] && [ "$VALUE" != "enabled" ] && [ "$VALUE" != "disabled" ]; then
       echo "Error: codex_reviews '$VALUE' not recognized. Valid values: enabled, disabled. Existing value left unchanged." >&2
+      exit 1
+    fi
+    # cross_project_learnings: empty get is the first-run prompt sentinel.
+    # Skills enable only on the literal "true". A typo must not persist — that
+    # keeps the feature off and suppresses the prompt. Reject, like
+    # codex_reviews; do not coerce (a stored default still kills the sentinel).
+    if [ "$KEY" = "cross_project_learnings" ] && [ "$VALUE" != "true" ] && [ "$VALUE" != "false" ]; then
+      echo "Error: cross_project_learnings '$VALUE' not recognized. Valid values: true, false. Existing value left unchanged." >&2
       exit 1
     fi
     mkdir -p "$STATE_DIR"
@@ -345,7 +370,8 @@ case "${1:-}" in
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push explain_level \
                codex_reviews gstack_contributor skip_eng_review workspace_root \
-               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks; do
+               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks \
+               timeline_stop_hook; do
       VALUE=$(read_config_value "$KEY" || true)
       SOURCE="default"
       if [ -n "$VALUE" ]; then
@@ -361,7 +387,8 @@ case "${1:-}" in
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push explain_level \
                codex_reviews gstack_contributor skip_eng_review workspace_root \
-               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks; do
+               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks \
+               timeline_stop_hook; do
       printf '  %-24s %s\n' "$KEY:" "$(lookup_default "$KEY")"
     done
     ;;
@@ -446,7 +473,7 @@ case "${1:-}" in
           # leaves the previous render fully intact.
           RENDER_TMP="$RENDER_DIR.tmp.$$"
           rm -rf "$RENDER_TMP"
-          if ( cd "$INSTALL_DIR" && bun run gen:skill-docs:user --host claude --out-dir "$RENDER_TMP" >/dev/null 2>&1 ); then
+          if ( cd "$INSTALL_DIR" && bun run gen:skill-docs:user --host claude --out-dir "$RENDER_TMP" --link-root "$RENDER_DIR" >/dev/null 2>&1 ); then
             _swap_in_render "$RENDER_DIR" "$RENDER_TMP"
             # Repoint installed skills at the render — gstack-relink prefers
             # the render dir when present.

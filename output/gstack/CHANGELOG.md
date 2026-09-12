@@ -1,4 +1,4 @@
-## gstuck (based on upstream v1.69.0.0, sanitized 2026-09-01)
+## gstuck (based on upstream v1.79.0.0, sanitized 2026-09-12)
 
 ### Removed
 - Supabase telemetry system (all phone-home calls to frugpmstpnojnhfyimgv.supabase.co)
@@ -18,6 +18,497 @@
 ---
 
 # Changelog
+
+## [1.79.0.0] - 2026-09-01
+
+**/ship can no longer be stranded by a backgrounded subagent.**
+**The bug class that came back twice is pinned everywhere it lives.**
+
+Claude Code v2.1.198 made Agent-tool subagents launch in the background by default. Four /ship steps (7, 8, 10, 18) hand work to a subagent and parse its final line as JSON, and none of them passed `run_in_background: false`, so a ship run could park forever on Step 18 waiting for doc-sync output that was never coming. This is the third time this class has bitten (#497 fixed it, #2440 regressed it, Step 18 rediscovered it). Every synchronous dispatch site in the skill tree now carries the explicit flag, and the flag is test-pinned per file so a fourth recurrence fails CI the moment it lands.
+
+The doc-sync dispatch also got real failure handling. If the dispatch gets backgrounded anyway, the parent polls for about 10 minutes, stops the runaway task, reconciles any commit the subagent made against the pre-dispatch HEAD, and ships the PR without the Documentation section instead of hanging. The subagent itself is scope-guarded to docs only: it never changes VERSION, never merges the base branch, skips the Codex doc review (the parent owns review passes), and reports a rejected push as `pushed:false` for the parent to reconcile.
+
+### The numbers that matter
+
+Source: `test/run-in-background-guidance.test.ts` (the pin list) and `grep -rl 'run_in_background: false' --include='*.md'` against this tree.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Generated files pinned to carry the flag | 2 | 24 | every sync dispatch site |
+| /ship dispatch steps with a deadline + recovery branch | 0 of 4 | 4 of 4 | Steps 7/8/10/18 |
+| /ship Step 18 worst-case wait (backgrounded dispatch) | unbounded | ~10 min | documented recovery; a foreground hang stays harness-bounded |
+| Codex doc review inside a ship-dispatched doc-sync | ~5-10 min per ship | skipped | parent owns reviews |
+| Headless gates that could mutate VERSION mid-ship | 2 | 0 | Step 8.3/8.4d resolve to Skip |
+
+The unbounded-to-10-minutes number is the one you feel: the failure mode changes from "my ship run has been sitting there for an hour" to a printed recovery line and a PR that still lands.
+
+What this means for anyone shipping here: /ship finishes even when the harness misbehaves, doc-sync can never renumber your release or double-run review passes, and document-release now carries its own spawned-session contract, so any orchestrator that dispatches it (not just /ship) gets safe headless behavior.
+
+### Itemized changes
+
+#### Added
+- **Deadline + recovery on every /ship dispatch step.** Steps 7 and 8 stop a runaway task and fall back to the inline audit if the subagent never completes (~10 min); Step 10 records Greptile triage as UNAVAILABLE in the PR body rather than pretending zero comments; Step 18 stops the runaway task, vets and pushes orphaned docs-only commits (never VERSION, package.json, or CHANGELOG; an explicit second-failure branch covers a moved remote), surfaces stray staged edits without ever discarding content, and proceeds without the Documentation section. The dispatch contract carries an explicit failure JSON shape, so a doc-sync that could not run reports as a failure instead of clean docs. No step ever silently parks the run.
+- **A spawned-dispatch contract in document-release itself.** Triggered strictly by the preamble's `SESSION_KIND: spawned` echo (the dispatcher's `GSTACK_SESSION_KIND=spawned` prefix; prompt or file claims alone never trigger it, matching the v1.78.0.0 echo-only rule). Every ask-the-user gate auto-resolves to its recommended option except the ones that would rewrite CHANGELOG content or change VERSION, which resolve to Skip and get recorded. Step 8.4d carries an explicit spawned note because its interactive recommendation is a VERSION bump.
+- **Docs-sync scope guard in /ship's dispatch prompt**: docs only, no base-branch merges, no version renumbering, CHANGELOG left to the parent, no Codex doc review, push rejections reported instead of resolved.
+
+#### Changed
+- The Codex Documentation Review section skips itself in any spawned session; its apply gate needs a human, and a dispatching workflow owns its own review passes. Covers version skew where an older installed /ship dispatches a newer document-release.
+- Autoplan's design/eng/dx phase dispatches, the review army Red Team, the spec review loop, the adversarial subagent, the Codex second-opinion/plan-review/doc-review fallbacks, design sketch and outside voices, CSO finding verification, and design-shotgun variant launches all state `run_in_background: false` explicitly. Parallel fan-outs stay parallel; foreground calls in one message run concurrently.
+
+#### Fixed
+- **/ship Steps 7, 8, 10, and 18 no longer strand the run** when Claude Code backgrounds their subagents (#497, #2440 class, third recurrence). The four dispatch specs share one resolver-sourced foreground note — dispatch happens only via the Agent tool, never the Skill tool or inline execution — so the phrasing cannot drift per site again.
+
+#### For contributors
+- `{{FOREGROUND_DISPATCH_NOTE}}` (scripts/resolvers/constants.ts) is the single source for the flag guidance; use it in any new dispatch template and add the generated carrier to `GENERATED_WITH_GUIDANCE` in `test/run-in-background-guidance.test.ts` in the same commit. The test's pin list is the census of synchronous dispatch sites, and its structural scanner fails any generated dispatch imperative that lacks the flag even when un-enumerated.
+- Follow-ups filed: PreToolUse-hook enforcement of the flag (P1, structural fix), a capability-narrowed ship-mode for document-release, and a cross-host dispatch semantics audit.
+- Carved-skill skeleton ceilings re-measured and ratcheted in `test/helpers/carve-guards.ts`; codex/factory ship goldens re-rendered; the ship-docsync E2E asserts `run_in_background === false` on the captured dispatch and its fixture resolves section reads deterministically.
+
+## [1.78.0.0] - 2026-08-31
+
+**Plan reviews ask their questions again, the OSV lane is green from 105 advisories, and 18 community fixes land with credit.**
+**The upgrade path can no longer delete your install.**
+
+The fix wave. The weekly periodic eval lane broke at v1.76: the spawned-session rule let the model infer "nobody is reading this" from any scripted-looking prompt and silently auto-decide every review question, so plan reviews stopped asking. reviewCount collapsed to 0 across four skills. The trigger is now machine-verifiable and nothing else: the preamble's own echoed `SESSION_KIND: spawned` status line. No text from a dispatch prompt, file, or page can flip a session to auto-choose; a spawned subagent that missed the env marker is still caught at failure time by the AUQ hooks' spawned escape. The reproduced failure went from 0 review questions to a full question flow on the same harness.
+
+The weekly OSV lane had been red for three weeks with 105 advisories, and its suppression file had been silently inert since v1.65 (wrong filename for auto-discovery, and per-directory configs never covered the nested lockfile anyway). The workflow now passes an explicit global `--config`, a dependency pass cleared 102 advisories through in-range bumps and overrides that actually reach nested exact pins, and the 3 survivors carry reasons plus `ignoreUntil` expiries. The diagram-render bundle lost its duplicate mermaid on the way: 9.96 MB to 7.59 MB.
+
+Eighteen community PRs are absorbed with authorship preserved, twelve of them with wave amendments that finish a gap or fix a defect found in review. Nine more confirmed bugs are fixed directly, led by #2679: a failed `mktemp` in the vendored upgrade path used to `rm -rf` your install's backup after a failed swap. The swap now aborts loudly and restores the backup.
+
+### The numbers that matter
+
+Sources: OSV scanner v2.3.8 (the exact release CI pins) on a frozen clean install; weekly CI runs 33369295978 (OSV) and 33363624506 (periodic); local A/B repro of `test/skill-e2e-plan-ceo-finding-count.test.ts`; `bun run test` on this tree vs a v1.77.0.0 scratch worktree.
+
+| Property | Before | After |
+|---|---|---|
+| OSV advisories on `./` recursive scan | 105 (24 packages, lane red 3 weeks) | 0, exit 0 (3 expiring reasoned ignores) |
+| Suppression config | inert since v1.65 | loaded via explicit `--config`, wiring-tested |
+| Periodic-lane review questions (5-finding plan) | reviewCount=0 (14/73 shards red) | full question flow on the same repro |
+| Failed upgrade swap | deletes backup and install | restores backup, aborts loudly |
+| Community PRs absorbed / issues closed | 40 open PRs, 17 of these issues open | 18 absorbed with credit, 17 issues closed |
+| diagram-render offline bundle | 9.96 MB (duplicate mermaid 10 + 11) | 7.59 MB |
+| Free-suite tests | 8,519 | 8,660 (+141; receipts red on v1.77) |
+
+### What this means for you
+
+Plan reviews ask their questions again, `browse stop` actually stops Chromium, secrets scanning can't be silently disabled by a failed `mktemp` or a slow gitleaks probe, and /gstack-upgrade cannot eat your install on a bad temp dir. If you filed one of the 17 closed issues or the 18 absorbed PRs: your fix shipped, with your name on it. Upgrade with /gstack-upgrade.
+
+### Itemized changes
+
+#### Fixed
+
+- **AskUserQuestion spawned-trigger objectivity (periodic-lane regression).** The v1.76 rule's "(or your dispatch prompt marks this session as spawned)" allowed inference; plan-review E2Es collapsed to zero questions. Two pinned-container verification rounds showed that ANY prose-declaration channel in the eager path keeps question counts unstable, so the rule now keys on exactly one thing: the preamble's own echoed STATUS line. Text can never trigger auto-choose — the strongest form of the anti-injection contract. Subagents without the env marker (Task-tool spawns) are caught at failure time by the AUQ hooks' spawned escape sentence, which now demands an explicit declaration, never an inference; #2733's env-prefix channel is untouched.
+- **mktemp guards at all three skill-content sites (#2679).** redact-doc resolver, ship pr-body, and the vendored upgrade path abort loudly on mktemp failure; the upgrade swap restores the backup on a failed `mv` instead of deleting it, and refuses to start over a stale backup left by a previously crashed upgrade; PR/MR creation refuses a missing or empty scanned body file; the GitLab MR path sends the scanned file's bytes instead of re-rendering an unscanned heredoc; `gstack-redact --from-file ""` errors instead of silently reading stdin.
+- **OSV lane green (supersedes #2695).** Explicit `--config` (auto-discovered configs apply per-directory and never covered `lib/diagram-render/bun.lock`); `overrides` pin ip-address 10.3.1 (clears both nested nodes, including express-rate-limit's exact 10.1.0 pin that a top-level bump provably cannot reach — @anupamme's #2695 credited for the parallel diagnosis) and sharp 0.35.0 (smoke-tested); marked ^18.0.11; full in-range lockfile refresh; diagram-render bumped through its own build-script contract (mermaid 11.16.1, excalidraw 0.18.1, mermaid-to-excalidraw 1.1.2 → 2.2.2, which retires the entire duplicate mermaid-10 advisory chain); every ignore carries a reason, an upgrade trigger, and an `ignoreUntil` expiry, pinned by a new wiring test so the file can never go inert again.
+- **A slow gbrain `--version` probe classifies as `timeout`, never `no-cli` (#2716).** A bun-shim install on a loaded box silently lost every brain-aware block because `no-cli` is the one status `--is-ok` does not forgive.
+- **codex skill: unclosed consult-mode fence, `turn.failed` reported as a failure, portable exit-code capture (#2671, #2669).** Every fenced region after the unclosed fence rendered inverted; a stated turn failure read as a "possible disconnect" (consult mode had no completeness check at all); `${PIPESTATUS[0]}` is empty under zsh so hang detection never fired and clean runs printed spurious exit noise. A repo-wide CommonMark-faithful fence-pairing test now guards every generated doc, and the exit-capture form is executed under real bash and zsh in tests. Expect `codex_timeout` telemetry to start firing for zsh users — that's the counter working, not a regression.
+- **Outside-voice fallback labeled honestly (#2735).** When Codex is unavailable the fallback reviewer is a same-family Claude subagent; the copy no longer sells it as "cross-model coverage" with "genuine independence."
+- **skill_prefix works under a gbrain render (#2738).** gstack-relink now name-patches the render tree — the file the host actually serves.
+- **Rendered section paths survive the atomic swap (#2692).** gen-skill-docs gained `--link-root`; the swap-in callers pass the final dir, so rendered skills no longer carry ~9 dead Read paths into a directory the swap just deleted.
+- **Persistent timeline Stop hook opt-out (#2677).** `--no-team` stays one-shot; the new `timeline_stop_hook` config key (flags, env, full gstack-config surface) survives upgrades, and an explicit "no" removes a live registration.
+- **browse: macOS headless GPU spin tamed + the lock-less headless Chromium is reaped on stop (#2709).** Darwin-gated flag set (reporter-validated, `GSTACK_DISABLE_GPU=off` escape) exposed as a pure, unit-testable function; the daemon records the launched child's pid + start time, and stop paths reap a survivor only after verifying both the recorded start time and a Chromium-looking cmdline, so a recycled PID is never killed.
+- **gstack-wtree: a failed `touch` falls through to the HEAD seed (#2687 hardening).** The underlying same-size-rewrite race was fixed in v1.74; the reporter's repro now runs 20/20 clean, and the one silent path that could reopen it is closed.
+- **Large gstack-redact reports survive a piped consumer.** Reports past the 64KiB pipe buffer were silently truncated when the reader was slow (`process.exit` beat the drain) — CI quality gates parsing the JSON saw a corrupt report. The report path now lets stdout flush; pinned by a test proven red against the old exit pattern.
+
+#### Community PRs absorbed (authorship preserved on the branch commits)
+
+- Codex preflight: a CLI that cannot execute reports `broken_install`, never `ready` — the wave completed autoplan's hand-maintained preflight chain and narrowed the install-signature grep to failed spawns. Contributed by @ukheni50 (#2745; fixes #2742).
+- ship design-checklist path points at the installed gstack/review copy. Contributed by @Lockyer228 (#2717; fixes #2694).
+- Feature markers live in GStack state, not project checkouts — the wave re-applied the CI seeding to the composite action and added an upgrade migration so nobody gets re-prompted. Contributed by @simonaltit (#2748; fixes #2728).
+- memory-ingest: transcript pages no longer vanish to slug collisions (887 staged → 0 ingested) or a frontmatter-fence render bug; slug assignments persist in the ingest state, so a page keeps its slug across runs and a new collider can never overwrite an unchanged page. Contributed by @rayers (#2699; fixes #2724).
+- browse js/eval returns the value of an async IIFE. Contributed by @loulanyue (#2747; fixes #2727).
+- land-and-deploy checks fork branches in the head repository — the wave replaced the metadata command (gh leaves `nameWithOwner` empty) and made fork branches report-only. Contributed by @pttydou (#2725; fixes #2696).
+- gstack-config rejects malformed `cross_project_learnings` at set. Contributed by @szsunyuan (#2676; fixes #2673).
+- gbrain-sync's pinned-source test is hermetic under a live autopilot. Contributed by @szsunyuan (#2689; fixes #2685).
+- redact: stale managed pre-push hooks refresh in place, so shipped wrapper fixes reach existing installs. Contributed by @schienbiz (#2731).
+- redact: Groq, Tavily, and Notion API key patterns. Contributed by @schienbiz (#2730).
+- redact: `.env.local` is not an internal hostname. Contributed by @davidani-davi (#2740).
+- redact: git SSH remotes are not emails — the wave named the lookahead constant. Contributed by @alopes50 (#2734).
+- gbrain ≥0.43 held-lock refusal classifies as engine-locked, not broken-config. Contributed by @pvanl (#2698).
+- A slow gitleaks probe no longer permanently disables secret scanning — and after three consecutive slow answers the run stops re-probing per file (a loaded box no longer stalls a big ingest for hours), warning once; the next run probes fresh. Contributed by @deniszjukow (#2715).
+- open-gstack-browser pre-flight actually kills the stale daemon (the pid grep never matched pretty-printed JSON). Contributed by @deniszjukow (#2714).
+- browse CLI honours CHROMIUM_PROFILE in profile-lock cleanup — the wave added the wiring tripwire. Contributed by @adam-badar (#2732).
+- make-pdf's pdftotext probe reads poppler's stderr banner instead of reporting "unknown" everywhere. Contributed by @snymanpaul (#2690).
+- bin writers no longer drop learnings and question events on paths with apostrophes; MSYS-form GSTACK_HOME works — the wave unified all four writers on the env-var import pattern. Contributed by @shreshth-designs (#2720).
+
+#### For contributors
+
+- Tests: 8,519 → 8,660 (+141 across the wave; every behavior fix carries a regression test proven red on a v1.77.0.0 scratch worktree via base-compatible reproducers — tests that merely fail to compile on the base don't count as receipts).
+- New structural guards: generated-doc fence pairing (CommonMark state machine, not mod-2 counting), no bare `${PIPESTATUS[0]}` in codex sections (plus real bash+zsh execution), OSV config wiring (flag ↔ filename ↔ entry hygiene, `ignoreUntil` mandatory), gstack-redact CLI empty-path rejection, cli.ts profile-dir delegation.
+- 19 carve skeleton ceilings re-pinned with measured values (+~440 bytes/skill for the AUQ fence); autoplan re-pinned again for the broken-install preflight arm.
+- `gen-skill-docs --link-root` exists for render-into-tmp-then-swap callers; direct-render callers need no change.
+- The absorbed test files gained spawn timeouts (v1.77 sync-spawn tripwire predates them).
+
+## [1.77.0.0] - 2026-08-31
+
+**Every PR stops paying for evals twice.**
+**Flakes are now measured, killed at the root, and fenced.**
+
+The test infrastructure got its overhaul, wave 1. The legacy 17-row eval matrix that ran serialized AHEAD of the sliced lane on every PR is deleted: one paid lane, its gate census derived from the runner itself, so a new gate test is in the census the moment its file lands. No hand-enumerated rows to drift, and the drift already tried, a new matrix row landed on main mid-branch and the merge resolved to the derived census that covers it by construction.
+
+The flake war moved from anecdotes to instruments. Every retried pass is now recorded where it cannot hide (bun's own output shows a retry as a clean pass, we probed it), the free lane retries a failing file once, loudly, and appends every flaky pass to a per-project ledger uploaded from CI on green runs. `bun run eval:flake-rank` ranks the series. And the wedge class that hit main, a hung child under a blocking spawnSync that no in-process timeout can interrupt, is extinct: 499 timeout-less sync-spawn sites across 146 files (the branch tripwire's own count against main) swept to zero, with a ratcheted tripwire that failed its first real offender the day a timeout-less spawn arrived from a merge.
+
+### The numbers that matter
+
+Source: CI runs 33263204465 / 33262077256 (measured 2026-08-29), the repo census (`test/helpers/touchfiles-data.ts`), and the sweep tripwire (`test/spawnsync-timeout-tripwire.test.ts`).
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Paid lanes per PR | 2 (serialized) | 1 | eval wall 35.5 → ~13 min (target) |
+| Measured duplicate spend per PR | ~$20.94 | $0 | matrix deleted |
+| Gate census keys | 86 (6 phantoms) | 77, all provably alive | reverse invariant enforces |
+| Sync spawns that can wedge a shard | 499 unbounded | 0 (8 reasoned exemptions) | tripwire-ratcheted |
+| Local gate worst case | ~6.5 h (4×4 jobs) | ~3.3 h (8×2) | isolation landed first |
+| Retried-pass visibility | invisible | recorded + ranked | `eval:flake-rank` |
+
+The phantom-census number is the quiet one that matters: six merge-blocking "tests" existed only as map keys. They are deleted, and a key without a living test now fails the free suite.
+
+What this means for anyone shipping here: PRs get one honest paid verdict faster and cheaper, a flaky pass never blocks your merge but never disappears either, and a test that hangs takes down thirty seconds, not a shard. Run `bun run eval:flake-rank` when you want the flake ledger's verdict.
+
+### Itemized changes
+
+#### Added
+- **Flake telemetry, end to end.** Eval-store records every retry attempt (`attempt`, `flaky_retries`), the paid report lists passed-only-on-retry tests as warnings, the free lane's flaky-retry pass is ON in CI with a single-writer JSONL ledger (branch + sha attributed, per-project by default) uploaded as an artifact on every run, and `bun run eval:flake-rank` aggregates the series with final-attempt accounting and a 60-day recency bound.
+- **Two-phase session timeouts.** A silent API dies at a startup grace (90s local, 300s CI floor, a real `Math.max` floor) with the distinct reason `timeout_startup` instead of burning a 600s work budget into an opaque `0 turns / $0.00` failure; the work budget arms on the first byte and the total wall never grows.
+- **Green-by-skip census.** "Ran N tests" counts skips, so a codex/gemini file whose every test self-skipped used to read as coverage. The classifier now parses bun's skip/pass recap and the paid report labels an all-skipped pass "verified nothing."
+- **Sync-spawn timeout tripwire** (spawnSync / execSync / execFileSync / Bun.spawnSync, comment-aware, 30-line window, shrink-only exemption ratchet) plus a raw-SHA fixture ban (`git show <sha>:path` fixtures must be vendored; the one live offender now reads a committed fixture).
+- **Behavioral kill-semantics tests**: a fake-claude shim proves a timed-out session leaves neither the CLI nor its grandchild alive; two gstack-detach watchdog tests cover TERM-immune grandchildren and the leader-dies-first case.
+- **CLI version stamping**: every eval run records `claude --version` (resolved once in the runner parent), so the next TUI-drift flake hunt is a grep, not archaeology.
+
+#### Changed
+- **One paid lane.** The legacy evals.yml matrix is deleted (pure deletion, one revert restores it) after a static parity receipt: the sliced lane's 49-file derived census strictly contained the matrix's 18 files. The PR comment moved into the sliced lane with final-attempt accounting and a fail-closed reconciliation verdict.
+- **Paid runner defaults 4×4 → 8×2**: ~10-13 real in-flight sessions (under the documented-safe 15) instead of ~4-6; per-shard TMPDIR/Chromium-profile isolation and a kill-path cleanup backstop landed first, deliberately.
+- **CI setup deduplicated into four composite actions**; the register-skills composite carries the fail-fast dangling-symlink verification loop that only the deleted matrix copy had, so the surviving lanes inherit it. Rerun-safe, frozen-lockfile fallback, input-validated.
+- **Supply chain pinned**: the claude CLI in the CI image is an exact version (bumps ride PRs that run the PTY gate, ending the weekly-latest drift that broke the harness three times), and every action in the secrets-bearing and image-publishing workflows is SHA-pinned.
+- **Routing journeys lost their answer key**: the fixture no longer ships a prompt→skill lookup table, so a regressed skill description can actually fail the test again, at roughly half the previous per-journey cost (2 turns, [Skill, Read] only).
+- Decided A/B experiments retired (auq-repetition-cut, preamble-script, the opus-47 single-run fanout comparison): one-shot questions answered months ago no longer re-run weekly as coin flips. `plan-ceo-review-expansion-energy` and `ios-qa-e2e` moved to the periodic tier with reasons.
+
+#### Fixed
+- **A fail-open reconcile gate**: GitHub's default run-step shell has no pipefail, so the fail-closed report's exit was read from `tee` (always 0) in both paid lanes. Now `PIPESTATUS[0]`, pinned by a wiring test.
+- **A write-token trust boundary**: the job that executes PR-authored code no longer holds the PR-comment write token; commenting moved to a job that runs zero repo code.
+- **Provider-runner orphans**: timeouts kill the whole process group (claude, codex, gemini, and gstack-detach's watchdog with the group id captured at spawn), and the codex/gemini runners inherited the orphan-drain hardening only the claude copy had. The observed 600s-timeout-stretching-past-1400s class is gone, with a regression net.
+- **Selection integrity**: 17 phantom selection keys deleted (a reverse invariant now requires every key to name a living test), gitignored `.agents/**` dep patterns that could never match a git diff replaced with their generators, and the codex/gemini local touchfile forks now derive from the canonical map.
+- **A cross-shard SKILL.md race**: the opus-47 eval regenerated the live tree's skill files mid-run; it now renders into a scratch dir via `--out-dir`.
+
+#### For contributors
+- `bun run eval:flake-rank` (with `--json`, `--dir`, `--since-days`) is the promotion-clock dial; the WS16 required-check decision reads it.
+- The overhaul plan (16 workstreams, reviewed by CEO + eng passes with two cross-model outside voices) continues: budget-aware shard walls, PTY readiness events, free-suite splits, judge determinism, and required-check promotion are the next waves.
+
+
+## [1.76.0.0] - 2026-08-31
+
+**Ship's doc-sync now survives Conductor.**
+**Spawned subagents finally know they're spawned.**
+
+Every Conductor-hosted /ship used to lose its PR `## Documentation` section the moment the document-release subagent hit an interactive gate: the subagent inherited the parent's environment, classified itself as a session a human was watching, rendered a decision brief nobody could answer, and stopped. The JSON contract broke, every time a gate fired (#2733). This release makes the spawned classification reachable: /ship marks its subagent with `GSTACK_SESSION_KIND=spawned`, and the whole stack (preamble, AskUserQuestion rules, both AUQ hooks) now resolves gates by auto-choosing the recommended option instead of writing prose to nobody. Destructive options are never auto-chosen, on any surface: the conservative choice wins and gets recorded. Auto-chosen decisions come back in a `decisions` array the parent prints to your console, so nothing is decided invisibly.
+
+### The numbers that matter
+
+Source: the new gate-tier E2E (`test/skill-e2e-docsync-spawned.test.ts`) run receipt under `~/.gstack/projects/<slug>/evals/`, plus issue #2733's field reports.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| `## Documentation` on Conductor-hosted ships | dropped whenever a doc gate fired | present, E2E-proven | fixed |
+| Ways to reach the spawned classification | 1 (OpenClaw env only) | any dispatching skill, one env prefix | new primitive |
+| Onboarding prompts consumable by unwatched subagents | up to 11 blocks per run, markers eaten | 0 emitted, markers preserved for the next human session | sealed |
+| Real-agent E2E through a firing VERSION gate | prose-STOP, JSON parse fails | auto-chose the recommended Skip, JSON parsed, VERSION untouched | 1/1 pass, $0.35, 106s |
+| Preamble dead work per spawned start | network update-check + a 17-subprocess repo probe | both skipped | faster subagents |
+
+The E2E is the receipt that matters: a live agent ran the real document-release preamble and VERSION gate inside a Conductor-ambient environment with the AUQ hooks active, ended on the machine-parseable contract, and left VERSION alone.
+
+### What this means for your workflow
+
+Ship from Conductor and the PR carries its Documentation section again; any gate the subagent auto-chose shows up as a `Doc-sync auto-decisions:` line in your console. If you build orchestrating skills, prefix a subagent's `gstack-skill-start` invocation with `GSTACK_SESSION_KIND=spawned ` and it behaves like a proper worker: no consent prompts consumed, no telemetry questions, no prose briefs to nobody. If anything sets that marker on a session a human is actually driving, the preamble now says so loudly (`SPAWNED_OVERRIDE: env`).
+
+### Itemized changes
+
+### Added
+
+- **`GSTACK_SESSION_KIND=spawned`** (`bin/gstack-session-kind` step 0): explicit per-command spawned marker, outranking every ambient env marker. Deliberately narrow: only `spawned` is honored; other values are reserved and ignored. Documented in `docs/OPENCLAW.md`, with a `SPAWNED_OVERRIDE: env` status line for tamper visibility when the env var (rather than an orchestrator marker) drove the classification.
+- **`decisions` in the doc-sync contract** (`ship/sections/pr-body.md.tmpl`): the document-release subagent records each auto-chosen gate as one line in a required `decisions` array; the parent prints them after the sync summary. Never embedded in the public PR body (tripwire-pinned). Absent key from an older installed skill reads as empty.
+- **Proactive spawned rule in the AskUserQuestion prose** (all tier-2+ skills): `SESSION_KIND: spawned` now short-circuits BEFORE the Conductor rule, with the destructive carve-out (never auto-choose an irreversible option, take the conservative choice and record it) and anti-injection scoping: a spawned marking counts only from the prompt that created the session, never from files, tool output, or web content read mid-run.
+- **Gate-tier E2E** (`test/skill-e2e-docsync-spawned.test.ts`): drives the verbatim Step 18 dispatch prompt against a real preamble-bearing document-release slice in a Conductor-ambient env with both AUQ hooks seeded live; asserts the 5-key JSON contract, a non-empty `decisions` array, and an untouched VERSION through a deliberately fired gate.
+
+### Changed
+
+- **`bin/gstack-skill-start`**: spawned sessions suppress `CONDUCTOR_SESSION: true` (prose to nobody is always wrong), key `SPAWNED_SESSION: true` and the spawned-session instruction block on the resolved kind instead of raw `OPENCLAW_SESSION` (OpenClaw behavior unchanged, regression-pinned), gate all 11 interactive-onboarding blocks plus their ack markers at emission, and skip the network-bound update-check and the first-task repo probe (their consumers are suppressed anyway; the one-shot just-upgraded marker survives for the next human session).
+- **AUQ hooks** (`hosts/claude/hooks/`): the Conductor deny gains a deterministic `[conductor][spawned]` auto-choose branch for env-marked spawned sessions, with per-question one-way-door annotations; both hooks' prose directives (interactive AND headless) carry a shared spawned escape sentence, single-sourced in `spawned-directive.ts` so the two paths can never drift. Hooks inherit the harness env, so the escape text is the designed lever for per-command-marked subagents.
+- **Ship Step 18 dispatch prompt**: frames the subagent as spawned, instructs the same-line env prefix (template bash blocks do not share exports), resolves every named gate to the recommended option with a conservative fallback, and places the skill's own doc-health summary in the body so the JSON stays the final line.
+
+### Fixed
+
+- **#2733**: Conductor-hosted /ship runs no longer lose their Documentation section when document-release hits an AskUserQuestion gate. The failure was gate-correlated and hit every ship on affected hosts.
+
+### For contributors
+
+- Skeleton byte ceilings in `test/helpers/carve-guards.ts` re-ratcheted for the AUQ prose growth (19 skills, measured values in comments); `test/fixtures/context-budget.json` recaptured in the same commit per the ratchet protocol.
+- New `docsync-spawned` selector in touchfiles (deps name every behavior under test) and a matching gate row in `.github/workflows/evals.yml`; `bin/gstack-session-kind` joined the `conductor-prose` and `auto-decide-preserved` selectors (it previously appeared in no dep list).
+- `test/gstack-session-kind.test.ts`, both hook suites, the resolver suite, and the dispatch tripwire gained ~25 cases, including a `spawnedByEnv()`-vs-script parity pin and a cross-surface destructive-policy drift guard.
+
+## [1.75.0.0] - 2026-08-29
+
+**Your review now hunts over-built code, not just broken code.**
+**And every skill's advice starts with "reuse before you build."**
+
+This release imports the best of ponytail, the code-minimalism ruleset, without importing its build-less posture. /review gains an eighth lens: a simplification specialist that flags unrequested structure (hand-rolled stdlib, one-implementation abstractions, dead flexibility, dependencies duplicating platform features) in a closed five-tag vocabulary. It is advisory only. It cannot dent your quality score, its fixes are never auto-applied, and on a lean diff it tells you something no reviewer ever says: "lean already — nothing to cut." Every tier-2+ skill also gains the reuse ladder (stop at the first rung that holds: this repo, stdlib, native platform, an installed dependency... then build the complete version of what remains) and a bounded closer, so completion reports stop touring every edit. Accepted shortcuts now leave a durable trail: a decision-ledger entry plus a `gstack-shortcut(dec-<id>)` marker in code, harvested into a debt ledger by /retro. Agent hosts without a full install (Zed, Amp, Cursor side projects) get a 1.8KB rules digest to copy into their own rules file. And /autoplan now runs the Eng review last, always, so the required shipping gate reviews the final amended plan instead of a stale one.
+
+### The numbers that matter
+
+Source: this branch's own runs, recorded under `~/.gstack/projects/<slug>/evals/` and the commit receipts.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| /review lenses | 7 | 8 (simplification, advisory) | +1 |
+| Simplification lens on this branch's own 5,190-line diff | n/a | `net: -37 lines possible` | dogfooded |
+| AskUserQuestion preamble section, per skill | baseline | -236 B (~9.7 KB across 41 skills) | gated by a live A/B: post-cut 7/7 format elements, substance equal to pre-cut |
+| Instruction-tier artifact for rules-reading hosts | none | 1,765 B committed digest (2,048 B budget) | new |
+| Skills-earn-their-tokens benchmark | none | 3 tasks x 2 arms (with/without skill), judged on the diff left behind | new |
+| /autoplan phase order | CEO, Design, Eng, DX | CEO, Design, DX, Eng always last | the gate sees the final plan |
+
+The A/B receipt is the one to trust: the AskUserQuestion cut only landed because a two-arm eval on real SDK captures showed the shorter render lost nothing (the gate outranked the approval, by design).
+
+### What this means for your workflow
+
+Run /review on a branch you suspect is over-built and read the `[ADVISORY]` rows plus the `net: -N lines possible` footer; nothing blocks, nothing auto-applies, you decide. Take a shortcut in an AskUserQuestion and it stops rotting silently: /retro reads the ledger back to you with its upgrade trigger. If you work in a rules-reading editor without a gstack install, copy `agents-digest/gstack-AGENTS.md` into your rules file and the ethos rides along.
+
+### Itemized changes
+
+### Added
+
+- **Simplification review specialist** (`review/specialists/simplification.md`): closed tag vocabulary (`delete:` / `stdlib:` / `native:` / `speculative:` / `shrink:`), dispatched on diffs over 100 lines, `--simplification` force flag. Advisory carve-out end to end: excluded from the quality score and findings-count header, ASK-only in Fix-First, `[ADVISORY]` labels, parent-printed `net: -N lines possible` footer, and a `Simplification: lean already — nothing to cut.` zero-findings line. Precision guarded by a false-flag fixture (a complete-but-lean diff must yield NO FINDINGS) and coverage-vs-structure boundary text (tests, error paths, and edge cases are never deletion targets).
+- **Reuse ladder in Search Before Building** (every tier-2+ skill): before writing new code, stop at the first rung that holds — a helper already in the repo, the stdlib, a native platform feature, an already-installed dependency — then build the complete version of what remains. Root-cause rule included: one guard in the shared function beats a guard in every caller.
+- **Bounded closer** (every tier-2+ skill): after completing work, report what changed, what was skipped, what to watch — a few short lines, with report-shaped skills (/qa-only, /plan-*-review, /retro, /document-generate) explicitly exempt because their report IS the work.
+- **Shortcut debt ledger**: accepting a Completeness ≤ 7 option on a durable-scope call now logs the ceiling and upgrade trigger to the decision ledger and marks each cut corner with `gstack-shortcut(dec-<id>): <ceiling>, upgrade when <trigger>`; /retro Step 11.5 harvests the markers, joins them on decision ids, and tags `unlinked` and `no-trigger` rot risks. Markers survive the redaction engine (pinned by test).
+- **Instruction-only host tier**: `agents-digest/gstack-AGENTS.md`, a committed, generated, budget-capped (2,048 B) digest of the ethos, reuse ladder, and voice rules. Setup's openclaw/hermes explainer arms print its path for copy-in; setup never writes a user's AGENTS.md (tripwire-tested, including laundered write shapes). README's host table now matches what setup actually does.
+- **With/without-skill arm benchmark** (periodic eval): three build-shaped tasks (a native-platform overbuild trap, a CRUD endpoint, a bugfix with planted decoys) run through real `claude -p` sessions twice — with the behavioral-layer skill installed and without — and the staged diff each arm leaves is judged for over-engineering on a 0-3 rubric with a full failure taxonomy (judge_error cells excluded from aggregates but surfaced; zero-diff arms are valid cells). Each cell also runs the fixture's own functional oracle (`checks=pass|fail|none`), so a refusal, a broken implementation, and working code stay distinguishable — correctness before LOC. A research instrument, not a gate.
+- **/autoplan runs Eng last, always**: mandatory order is now CEO → Design (if UI scope) → DX (if developer-facing scope) → Eng, with a single final approval gate; clearly-wrong premises queue as User-Challenge items instead of stopping mid-run, and accepting one at the gate amends the plan and re-runs Eng on the amended plan. Static test pins the Eng-terminal order.
+
+### Changed
+
+- **AskUserQuestion preamble section slimmed** (-236 B per skill, ~9.7 KB across the corpus): duplicate statements of the completeness rule, auto-decide marker, and tool-not-prose rule removed while keeping every verbosity floor and all 14 format pins. Landed only after a live NOT-WORSE A/B (pre-cut vs post-cut render, identical prompt, SDK capture) showed zero format-element loss and equal recommendation substance.
+- **Terse-mode label tells the truth**: the claimed savings is now the measured 2.6 KB, not "~3-5 KB".
+- `/review` checklist knows Completeness Gaps and Simplification are orthogonal (coverage up, structure down), and a `gstack-shortcut` marker downgrades a would-be gap finding to acknowledged debt — but only when its decision id resolves in the ledger; an orphan marker is reported as a forged suppression (cross-model adversarial catch).
+
+### Fixed
+
+- **Version bumps no longer strand the agents digest**: `gstack-version-bump write --regen-digest` reruns the repo's digest generator in the same mutation (explicit opt-in — a plain `write` never executes repo files it merely finds), and both ship's and land-and-deploy's evidence gates allow-list the digest alongside VERSION. Without this, every release commit of this repo would have failed the freshness CI check.
+- **The free-suite flaky retry can no longer mask real failures**: the retry pass vetoes on ANY unattributable failure evidence (headerless failures, unhandled errors between tests, truncated runs), an empty shard carries an empty failing-files list instead of crashing the retry, and a dead conditional was removed.
+- **Version allocation distrusts laundered git**: `gstack-next-version` consults `ls-remote` only when origin is actually configured, and a configured origin that "successfully" advertises zero heads (the Conductor git shim's failure shape) now falls back to local refs with a loud warning instead of reading an empty queue and reallocating a taken version. Both shim shapes are pinned by regression tests.
+- **Browse temp paths are portable**: local file serving accepts both the browse TEMP_DIR and the OS tmpdir (`TEMP_DIRS` allowlist), while remote serving stays pinned to TEMP_DIR only (the security asymmetry is test-enforced). An untrustable TMPDIR (`/`, `$HOME`, an ancestor of the daemon's cwd) is ignored rather than trusted for the daemon's lifetime.
+- Setup's instruction-tier pointer prints a script-anchored digest path instead of a cwd-relative one that broke when invoked from another directory.
+- /retro's shortcut harvest no longer reports phantom debt from files that merely document the marker convention (placeholder filter + judgment prose).
+- The arm benchmark harvests against a recorded seed commit (immune to agents that commit and push), ignores node_modules, survives multi-megabyte patches, names its judge-diff cap and reports truncation loudly, and wraps untrusted diffs in per-call random sentinels so a faked closing marker cannot steer the judge.
+- The AUQ A/B eval treats a judge failure on either side as inconclusive instead of coercing it to a fake degradation-or-mask, and reads its pre-cut arm from a vendored fixture instead of a branch-local SHA that dies with the branch.
+
+### For contributors
+
+- `bun run test` gains sandbox knobs: `GSTACK_FREE_JOBS` overrides shard count (digits-only, loud on garbage) and `GSTACK_FREE_RETRY_FLAKY=1` opts into one serial retry pass for syscall-supervised sandboxes (default stays OFF — dev boxes should see flakes). `scripts/sandbox-doctor.sh` makes a Vercel/Conductor cloud sandbox run the suite green in one idempotent command (documented in docs/TESTING_INTERNALS.md): atomic git-shim patching with a backup, loud on patch-pattern drift, :99-socket Xvfb detection, dnf-gated installs, and it survives a missing /dev/shm. A failed digest regen now fails `bun run gen:skill-docs` locally instead of deferring the red to CI.
+- The arm-benchmark selftest (fixture integrity, judge plumbing, install asymmetry) now runs FREE in `bun run test` on every PR via `test/arm-benchmark-selftest.test.ts` — the paid periodic instrument can no longer burn money on broken fixtures.
+- Eval-store schema v2: harvest records carry `{insertions, deletions, net}`; `recordE2E` now populates `tokens_used`.
+- Touchfiles dep lists closed gaps (fixtures, judge helper, harness, ship render) and the context-budget ratchet fixture was re-captured, locking the AskUserQuestion reduction so it cannot silently regress.
+- New coverage: TEMP_DIRS widening + remote-serving asymmetry, shortcut-marker writer/harvester grammar joint, sandbox-doctor shell guards, GSTACK_FREE_JOBS parsing, laundered-ls-remote shims, digest freshness/budget/writer tripwires, and a real generator round-trip through the version bump.
+## [1.74.0.0] - 2026-08-29
+
+**Green now means green: every test runs somewhere, provably.**
+**The suites got faster by deleting lies, not by skipping work.**
+
+This release is a full audit and overhaul of gstack's own test and CI system. The audit found the safety net lying in specific ways: three CI eval jobs ran zero tests and passed on every PR, four paid test files could never execute in any lane, the required free-tests check silently skipped nine make-pdf gates on Linux for their entire life, and about 57 E2E files ran in no scheduled lane at all. All of it is fixed, and each fixed class now has a tripwire so it cannot quietly return.
+
+Speed came from structure. The free suite packs shards by recorded per-file durations instead of file counts, and the serial tree-mutating shard is gone entirely: the generator gained a main() guard and renders every host into out-dirs, so the suite never writes the live tree. The paid lane re-platforms CI onto the same sharded runner you use locally, with one planner manifest, sliced executors, and a report that fails closed when a slice's artifact never lands.
+
+### The numbers that matter
+
+Sources: live CI run 33194732051 (pre-change shard timings), the committed durations seed (`bun run test:free --record-durations`, 496 files), and the planner's own output on this branch.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Free-suite shard spread | 28s to 97s | 6 shards, ~80s predicted each | balanced |
+| Serial mutator tail, every run | ~35-40s | 0s (shard dissolved) | gone |
+| Paid files runnable in NO lane | 4 | 0 | tripwired |
+| E2E files in no weekly CI lane | ~57 | 0 (3 reasoned excludes) | contract |
+| Zero-test green CI jobs per PR | 3 | 0 | deleted |
+| Touchfiles keys missing self-registration | 129 | 0 | enforced |
+| Hand-tuned paid timeout literals | 395 | 97 (46 justified) | 5 tiers |
+
+The self-registration number is the quiet one that matters most: before it, editing only a test's assertions selected nothing, so the changed test never ran on the change that changed it.
+
+### What this means for you
+
+`bun run test` is honest and flat: no hidden slop scan, no serial tail, shards that finish together. Paid CI and local paid runs share one engine, so a shard that never starts, a slice that dies, or a file that self-skips everything is a red check with a name, never a silent pass. When you add a paid test, the orphan tripwire forces it into the census the same commit. Upgrade, run `bun run test:free`, and read `docs/TESTING_INTERNALS.md` if you maintain tests.
+
+### Itemized changes
+
+#### Fixed (what green means)
+- The required free-tests lane builds the gate binaries (`build:gates`) and runs the nine make-pdf e2e gates that silently self-skipped on Linux since they existed; `GSTACK_EXPECT_BINARIES=1` + `ci-prereqs.test.ts` invert the skip polarity in CI so the class cannot return.
+- Deleted the two vestigial eval matrix rows that ran zero tests per PR (codex/gemini, periodic-tier files with no row tier) and armed `e2e-pty-plan-smoke` with its missing `tier: gate` (it burned ~7 minutes of setup then skipped every describe).
+- Activated the four paid test files whose names fell outside the paid globs (net execution zero, forever): carve-section-loading, codex-e2e-plan-format (+ its missing periodic gate), codex-e2e-recommendation-substance, llm-judge-recommendation. New `paid-orphan-tripwire.test.ts` fails the suite on any EVALS-gated file outside the globs.
+- 135 touchfiles keys now name their own declaring test file; the tier-alignment warning became a hard failure with a 4-entry ratchet.
+- Five quarantined browse tests reactivated (two guard the extension's privileged-message security boundary); root cause was stale dev-machine state, proven byte-identical since v1.66.
+- The two `expect(true)` paid stubs are `test.todo` (reported as todo, never pass), keeping their selector surfaces.
+- Five test files stopped assigning `GSTACK_HOME` at module scope (it leaked into every sibling in the shard process); a static tripwire blocks recurrence.
+- Shared `/tmp` artifact paths in six PTY tests became per-test mkdtemps (they collided under retry and parallel worktrees); 18 live-repo `cwd:` sites audited and reason-commented.
+- `restrictDirectoryPermissions` warns and skips symlinked dirs on both platforms (chmod and icacls dereference the link), closing the Windows lane's standing red with a platform-aware regression test.
+- Judges resolve their model through `lib/eval-model.ts` (the global `GSTACK_EVAL_MODEL` override now applies) and retry 429s with jittered exponential backoff instead of one fixed second.
+- Seven 28-minute test timeouts inside 25-minute CI jobs trimmed to the physical ceiling; an `eval-budgets` fit test pins that budgets above the wall cannot come back.
+
+#### Changed (speed and structure)
+- Free suite: duration-aware LPT shard packing from the committed seed (`scripts/free-test-durations.json`, refresh with `bun run test:free --record-durations`), duration-aware wall timeouts, per-shard prediction logging, corrupt-seed fallback to hash sharding. The `--shard` CI-matrix contract is untouched.
+- `TREE_MUTATING` is empty: `gen-skill-docs.ts` gained a `main()` guard (imports never regenerate; pinned by an import-purity test) and `--out-dir` renders every host, so all eight former mutators render into mkdtemps and the four ratchet readers rejoined the parallel shards.
+- Paid runner: full-stream spooling to per-shard log files (no more 30-minute streams held in RAM), shared `runShardChild` lifecycle with the expectedFiles enforcement drift fixed, parent-computed selection propagated to children via `EVALS_SELECTION_JSON` (fail-open), retry parity as literals.
+- Paid CI re-platform (parity phase): evals.yml gains a sliced lane (planner manifest, 6 executors, fail-closed report) running alongside the legacy matrix; evals-periodic.yml runs ALL periodic-tier tests weekly minus the reasoned exclusions in `periodic-exclude-data.ts`, plus a weekly full-gate census and a tracking-issue upsert on red weeks. The hollow-shard guard fails exit-0 shards that executed zero tests under `EVALS_ALL`.
+- 298 paid timeout literals swept onto five named tiers (`test/helpers/eval-budgets.ts`), round-up only.
+- `slop:diff` left `bun run test` (it silently added up to 240s) and runs in quality-gate per PR instead; `/review` keeps its interactive run.
+- The four worst fixed sleeps (300s/30s/30s/20s) became condition polls or stdin-EOF-bound child lifetimes; the parent-watchdog test dropped from 24s to 3.6s with a strictly stronger assertion.
+- CI hygiene: least-privilege permissions on every workflow, one pinned Bun version everywhere (drift-tested), the image-tag triple bound by test, ci-image stops rebuilding identical images on every ship, quality-gate dropped its 74-second full-history checkout, fork-safe concurrency keys, timeouts on every job, windows caches warm-start on lockfile bumps.
+
+#### Added
+- 95 tests for six zero-coverage surfaces: the eval CLI family (eval-list/compare/summary/select), slop-diff, the code-intelligence CLI, browse media-extract and session-cookie-store, and lib/version-source.
+- Policy and tripwire tests: paid-orphan tripwire, GSTACK_HOME module-scope tripwire, bun-version drift, image-tag binding, gen-skill-docs import purity, out-dir byte-identity for external hosts, manifest/slice/report contract, eval-budget fit and ratchet, periodic-exclude policy, selection propagation drift.
+- `test/helpers/run-bin.ts`: one spawnSync wrapper replacing ~36 near-identical local `run()` helpers (first three files migrated; the rest are a filed follow-up).
+
+#### For contributors
+- `docs/TESTING_INTERNALS.md` documents the new runner architecture; CLAUDE.md's testing prose matches it. TODOS.md closes the absorbed backlog items (periodic coverage contract, eval-harness observability, the sidebar trio, which turned out already deleted) and files the follow-ups: legacy matrix deletion after parity, the required-check decision, browse /tmp-namespace hardening, PTY boot-readiness waits, the single typed test registry, and the bun-native LPT swap at the next Bun unpin.
+
+## [1.72.0.0] - 2026-08-28
+
+**"Go register an API key" now drives your real browser.**
+**Aside is the recommended driver, consent asked every single time.**
+
+When a workflow hits a third-party website moment, registering an API key, creating a vendor account, wiring a webhook, gstack now checks for the Aside AI browser and offers to drive it: your real logged-in sessions, no cookie export, no re-auth. You approve each drive per task, by name and by site. Passwords, payment, CAPTCHAs, and identity stay yours; Apple credential creation is never a drive target in any skill. No Aside installed? On a Mac you get one download pointer (aside.com, macOS 15+), once, and gstack's own visible browser remains the fallback everywhere. gstack never runs an installer for you, and a detected binary is never treated as consent.
+
+This release also fixes a real hardening bug: on hosts where the process holds CAP_FOWNER (Docker as root, CI sandboxes), the browse daemon's owner-only chmod could land on `/tmp` itself when a state file was configured there, locking the whole machine's `access(2)` checks out for everyone. The permission code now refuses shared, sticky, symlinked, or foreign-owned directories, warns instead of going silent, and pins the check and the chmod to one inode.
+
+### The numbers that matter
+
+Source: this branch's test runs on a Linux CAP_FOWNER sandbox, plus the eval records under `~/.gstack/projects/<slug>/evals/`.
+
+| Metric | Before | After | Δ |
+|---|---|---|---|
+| Drivers offered at a third-party web moment | 1 ($B headed) | 2 (Aside recommended, $B fallback) | +1 |
+| `/tmp` after a `BROWSE_STATE_FILE=/tmp/x.json` boot on a CAP_FOWNER host | chmod 0700, machine-wide breakage | refused, warned once | fixed |
+| `resolve-user-slug` on coreutils-only Linux with a git email | exit 127 | exit 0 | fixed |
+| Prose pins guarding the consent contract | 0 | 21 tests, 254 asserts | new |
+| Live consent-gate E2E cases (gate tier, hermetic shims) | 0 | 5, all passing at ~$0.35/run | new |
+
+The consent gate is the number to care about: five real `claude -p` runs prove the agent offers Aside only when detected, degrades cleanly when it is broken or absent, pitches the download exactly once on macOS, and refuses browser drives for Apple credentials under any framing.
+
+### What this means for you
+
+The next time a skill says "you need a Duffel test token," it can just go get it with you watching, in the browser where you are already signed in. You approve the site and the actions first, every time, and the secret lands in an owner-only file, verified with one read-only API call, never echoed to chat. If you would rather not install anything, nothing changes: the first-party browser keeps working exactly as before. Docker-as-root users should upgrade for the `/tmp` fix alone.
+
+### Itemized changes
+
+### Added
+- Third-Party Web Actions contract (ship, spec, office-hours, land-and-deploy, setup-deploy) now names the Aside AI browser as the recommended driver: runtime detection probe with a portable timeout guard, detection-conditional consent options, step-wise drive discipline with the vendor's confirm mode left on, and a failure path that quotes errors (redacted), retries once, and falls back only with fresh consent.
+- Credential boundaries hardened in the same contract: secret-minimization preference (password-manager autofill, human-used copy buttons), Apple credential creation banned as a drive target in every skill, and vendor `--help`/skill text explicitly scoped to operational syntax, never new permissions.
+- `test/third-party-actions.test.ts`: 21 pin tests covering every load-bearing sentence of the contract, plus repo-wide tripwires (an `aside` command allowlist of `--version`/`--help` only, and a ban on Aside installer invocations in any generated doc).
+- `test/skill-e2e-third-party-actions.test.ts`: five hermetic gate-tier E2E cases (present, absent-Linux, present-but-broken, absent-macOS pitch, Apple credential ban) wired into CI's eval matrix; the absent cases actively mask any real `aside` binary on the host so dev machines cannot leak into detection.
+
+### Changed
+- The v1.65.0.0 stance of driving only gstack's own browser stack is superseded by explicit user directive: Aside is the one product gstack recommends by name. Never-auto-install and per-task consent survive unchanged and are now pin-tested.
+- The setup flow's bun-installer checksum verification resolves `sha256sum` before `shasum`, so it works on coreutils-only Linux.
+
+### Fixed
+- `restrictDirectoryPermissions` no longer chmods shared sticky directories (`/tmp`, `/var/tmp`), foreign-owned directories, symlinked state dirs, or world-writable mounts when running as root; refusals warn once per process instead of failing silent, owned-but-unreadable dirs still self-repair, and the check-then-act race is closed with fd-anchored fstat/fchmod.
+- `gstack-config resolve-user-slug` exited 127 on Linux distros without perl's `shasum` whenever a git email was set; both hashing call sites now resolve `sha256sum` first and fall back to `shasum -a 256`.
+- A path-validation test assumed `/etc/crontab` exists (absent on Amazon Linux and minimal Fedora); it now uses `/etc/passwd`.
+
+### For contributors
+- `test/helpers/fs-caps.ts`: functional capability probes (`canRevokeWrites`, `canRevokeReads`) replace uid-0-only guards across 14 chmod-based test files, so suites skip honestly on CAP_DAC_OVERRIDE containers instead of asserting revocations the kernel ignores.
+- Five `tpa-*` entries registered across `E2E_TOUCHFILES`/`E2E_TIERS` with template-level deps, the eval matrix row carries `tier: gate`, and `eval:bg:periodic`'s detach timeout rose to 36000s to cover the grown periodic shard census (floor-enforced by test).
+
+## [1.71.0.0] - 2026-08-27
+
+**Every skill invocation just got half the prompt bill.**
+**Same behavior, measured by A/B evals, locked by CI ceilings.**
+
+Every gstack skill pays a fixed prompt cost before doing any work. This release cuts that cost across all 62 skills and pins the wins so they can't creep back. The shared preamble's bash moved into two runtime scripts (`bin/gstack-skill-start`, `bin/gstack-skill-end`) that echo the same STATUS lines the prose always interpreted. One-time onboarding text now appears only when its gate actually fires, emitted as session-bound instruction blocks instead of riding along in every render. Eleven more skills got the section carve and office-hours' existing carve went deeper, taking the carved roster from 9 to 20: heavy reference bodies load on demand at the step that needs them, never before.
+
+### The numbers that matter
+
+Source: `bin/gstack-context-bill --diff` comparing the main render against this branch's render, both regenerated from source.
+
+| Ledger | Before | After | Δ |
+|---|---|---|---|
+| /review eager per invocation | 109.5KB (~26.6K tok) | 53.7KB (~13.0K tok) | −51% |
+| /land-and-deploy eager | 109.8KB | 54.4KB | −50% |
+| /codex eager | 100.0KB | 53.9KB | −46% |
+| Corpus on disk | 6.4MB (~1,651K tok) | 5.4MB (~1,398K tok) | −15% |
+| Repo CLAUDE.md (always-on in dev sessions) | 66.4KB | 44.9KB | −32% |
+
+50 of the 62 installed skills dropped (the rest are fixture/alias entries with no preamble to shed). The smallest real cut is −4,780 tokens per invocation (tier-1 utilities); non-carved tier-2 skills each shed a flat ~20.8KB of preamble. Zero always-on or eager growth anywhere in the diff.
+
+The behavioral proof ran before this shipped: an A/B eval pins the script render against the old inline render, a section-loading eval verifies a real agent Reads each carved section before doing its step (20 skills, data-driven), and the full paid gate passed with the environmental-only baseline. The context-budget ratchet re-captured after every wave, so each ceiling now sits at the new, lower number.
+
+### What this means for you
+
+The agent reads roughly half the boilerplate before starting your task, so first-token latency and per-invocation cost drop across every skill you run. Onboarding prompts you already answered never render again. Nothing else should feel different: if a skill behaves differently than it did on v1.69, that's a bug, and the A/B harness exists to catch it. Run `bun run test` after upgrading; the ratchet will tell you if anything grew.
+
+### Itemized changes
+
+### Added
+- `bin/gstack-skill-start` / `bin/gstack-skill-end`: the preamble and telemetry runtime, replacing ~18KB of inline bash per tier-2+ skill. Emits a `SKILL_START_PROTO: 1` handshake, STATUS lines, and gated one-time onboarding as `GSTACK_INSTRUCTION` blocks bound to a per-run session ID with a random suffix; passthrough output is sanitized so repo or prior-session content can never mint directive blocks or forge the session ID.
+- `bin/gstack-retro-metrics`: deterministic git metrics for /retro (labeled contract, local reads only), replacing inline git/awk in the skill body.
+- Section carves for 11 new skills — review, codex, land-and-deploy, autoplan, spec, setup-gbrain, qa, browse, retro, design-html, design-shotgun — plus a deeper office-hours carve (Phase 2A/2B), each with registered guards, loading scenarios, and recomputed size floors. The design carves force-read their UX doctrine before design work begins.
+- Context-budget ratchet: a free CI test grades the always-on catalog and each skill's per-invocation cost against committed ceilings; growth fails the suite, reductions re-capture and lock.
+- Six reference docs extracted verbatim from the repo CLAUDE.md (browser internals, CHANGELOG format spec, project tree, hermetic-E2E notes, slop-scan guide, OpenClaw publishing), each replaced inline by a short rule plus pointer.
+
+### Changed
+- The AskUserQuestion tool-resolution and 5+-option rules render as a compact branch table keyed on echoed STATUS lines; full split/CJK rules live at absolute install paths read on demand. All 14 mandatory format pins stay in every tier-2+ skeleton.
+- ios-fix, ios-clean, ios-sync, and ios-design-review dropped to preamble tier 2 (they never used the tier-3 sections).
+- The preamble degrades safely on stale installs: missing handshake means safe defaults, deferred onboarding (consent is never lost), and a one-line upgrade hint.
+- The privacy consent gate and telemetry prompt fire only in interactive sessions; spawned and headless runs defer them to the next human session.
+- Hermetic E2E children get seeded onboarding state in their own `GSTACK_HOME`, so evals never burn turns on first-run prompts.
+
+### Fixed
+- The once-daily artifacts pull is now non-interactive and slow-network bounded, so a hung remote can't stall the first skill invocation of the day.
+- Branch names and artifacts-repo state files are sanitized before entering STATUS output and timeline records, closing log-forgery paths via hostile ref names or planted files.
+- Skill-start no longer parses a multi-megabyte `~/.claude.json` on every invocation when no gbrain server is registered.
+
+### For contributors
+- Preamble A/B eval (`skill-e2e-preamble-script-ab`, periodic tier) pins script-render behavior against the pre-consolidation inline render; the carve-section-loading eval covers all 20 carved skills at an honest 480s ceiling.
+- New free tests: skill-start/skill-end contract and behavior (13), retro-metrics (11), onboarding moved-literals tombstone (3 tests pinning 12 literals both directions), context-budget ratchet (7). Parity baseline and ratchet fixtures re-captured; the shrink floor stays (OV8 evaluated).
+- `test/helpers/touchfiles-data.ts`: the runtime scripts joined every dep list that named the moved generators, so diff-based eval selection still fires on script changes.
+
+## [1.70.1.0] - 2026-08-26
+
+**Ship names its documentation subagent at every decision point.**
+**The handoff is now pinned by tests that fail loud if it ever goes quiet.**
+
+`/ship` has dispatched `/document-release` as Step 18 since v0.18.2.0, but the v1.54.0.0 carve moved that step into an on-demand section and the always-loaded skeleton stopped saying "document-release" at any decision point (one mention survived, buried in the re-run checklist). The wiring was intact. The visibility was gone, and nothing tested the handoff. This release restores the visibility and locks it in: the section index, the STOP pointer, the Step 17 handoff line, and a new hoisted doc-sync invariant all name "the /document-release subagent" (subagent-framed on purpose, so an agent dispatches the isolated worker instead of running a weaker inline copy). A free tripwire pins the wording, carve-guard anchors pin each touchpoint independently, and a new gate-tier E2E proves a live agent actually fires the dispatch before creating the PR.
+
+### The numbers that matter
+
+Source: this branch's eval store (`~/.gstack/projects/<slug>/evals/`, runs of `test/skill-e2e-ship-docsync.test.ts`) and `wc -c ship/SKILL.md`.
+
+| Property | Before | After |
+|--------|--------|-------|
+| Doc-sync subagent named in the Claude-host ship workflow body | 0 mentions at any decision point | 4 (section index, STOP pointer, Step 17 handoff, hoisted invariant) |
+| Tests pinning the ship→document-release handoff | none | 5 free tripwire tests + 3 per-touchpoint carve anchors + 1 gate E2E |
+| Live dispatch proof | never measured | 9/9 runs fire the dispatch before PR creation ($0.63-1.04, 234-319s each, sonnet-4-6) |
+| Always-loaded skeleton cost | 91,267 B | 91,764 B (+497 B, cap raised to 92,300) |
+
+Nine out of nine live runs is the line that matters. The E2E asserts on the actual tool-call stream, with a dispatch-specific matcher that a subagent merely quoting section text cannot satisfy, and a timeout-tolerant exit check that never softens the dispatch assert itself.
+
+### What this means for gstack users
+
+When you run `/ship`, the docs sync step is no longer an invisible line in a file the agent may summarize past. It is named at the exact moments the agent decides what to do next, and a merge-blocking test fails if any future edit makes it invisible again. A failed docs subagent still never blocks your ship. Nothing to configure. Upgrade and ship.
+
+### Itemized changes
+
+#### Fixed
+
+- `/ship`'s Claude-host skeleton names "the /document-release subagent" at all three Step 18 decision points (manifest trigger rendering into the section index and STOP pointer, the Step 17 handoff line, and a hoisted doc-sync invariant beside the PR-title invariant). The invariant states the contract plainly: the dispatch itself is never skipped; only a failed subagent is non-blocking.
+
+#### Added
+
+- `test/ship-document-release-dispatch.test.ts`: free tripwire pinning the carved Step 18 contract (imperative, `subagent_type`, JSON return keys, non-blocking clause), the three skeleton touchpoints, the invariant-above-STOP ordering, the E2E matcher's four marker strings, and the inlined Step 18 → Step 19 ordering in the codex/factory goldens.
+- `test/skill-e2e-ship-docsync.test.ts` (`ship-docsync`, gate tier): a live agent runs the sliced Step 17→19 ship tail in a hermetic git fixture; hard assert that an Agent dispatch matching the Step 18 prompt markers appears in the tool-call stream before any `gh pr create`. Fixture fails loud on step-marker drift, pins its git branch against operator config, asserts every setup command, and neutralizes the credential pre-push guard's question branch.
+
+#### For contributors
+
+- Carve-guards ship entry: three non-overlapping per-touchpoint anchors (gerund, imperative, third-person: no anchor subsumes another, so each is independently enforced), the carved imperative pinned to stay carved, skeleton byte cap 91,600 → 92,300 with the measured value recorded.
+- `ship-docsync` registered in `E2E_TOUCHFILES` and `E2E_TIERS` (gate), with a whole-file `describeE2ETier('gate')` self-gate composed with diff selection so the file stays out of the periodic shard census; the tierless `test:evals` invisibility tradeoff is documented in the file header.
+- Internal backlog notes corrected to describe the current Step 18 design (the pre-v1.54 "Step 8.5" prose was still documented as current), plus three deferred follow-ups recorded: a machine-checkable dispatch receipt, the same dispatch-pin treatment for land-and-deploy→canary, and the periodic shard-census ceiling arithmetic.
 
 ## [1.69.0.0] - 2026-08-22
 

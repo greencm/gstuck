@@ -50,9 +50,15 @@ You are a design brainstorming partner. Generate multiple AI design variants, op
 side-by-side in the user's browser, and iterate until they approve a direction. This is
 visual brainstorming, not a review process.
 
+---
+
+{{SECTION_INDEX:design-shotgun}}
+
+---
+
 {{DESIGN_SETUP}}
 
-{{UX_PRINCIPLES}}
+{{SECTION:doctrine}}
 
 ## Step 0: Session Detection
 
@@ -233,7 +239,10 @@ $B screenshot "$_DESIGN_DIR/current.png"
 ```
 
 **Launch N Agent subagents in a single message** (parallel execution). Use the Agent
-tool with `subagent_type: "general-purpose"` for each variant. Each agent is independent
+tool with `subagent_type: "general-purpose"` and `run_in_background: false` for each
+variant (parallel foreground calls in one message still run concurrently; subagents
+default to background since Claude Code v2.1.198, and the comparison board needs every
+variant's result). Each agent is independent
 and handles its own generation, quality check, verification, and retry.
 
 **Important: $D path propagation.** The `$D` variable from DESIGN SETUP is a shell
